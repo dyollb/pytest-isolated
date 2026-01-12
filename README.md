@@ -1,5 +1,7 @@
 # pytest-isolated
 
+[![Tests](https://github.com/dyollb/pytest-isolated/actions/workflows/test.yml/badge.svg)](https://github.com/dyollb/pytest-isolated/actions/workflows/test.yml)
+
 A pytest plugin that runs marked tests in isolated subprocesses with intelligent grouping.
 
 ## Features
