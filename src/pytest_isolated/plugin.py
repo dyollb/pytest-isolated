@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -30,7 +32,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--no-subprocess",
         action="store_true",
         default=False,
-        help="Disable subprocess isolation (run all tests in main process for debugging)",
+        help="Disable subprocess isolation (for debugging)",
     )
     parser.addini(
         "subprocess_timeout",
@@ -82,7 +84,7 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         "user_properties": getattr(report, "user_properties", []),
         "wasxfail": hasattr(report, "wasxfail"),
     }
-    with open(path, "a", encoding="utf-8") as f:
+    with Path(path).open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
 
 
@@ -125,7 +127,8 @@ def pytest_collection_modifyitems(
 
 def pytest_runtestloop(session: pytest.Session) -> int | None:
     """
-    Run each subprocess group in its own subprocess once; then run normal tests in-process.
+    Run each subprocess group in its own subprocess once;
+    then run normal tests in-process.
 
     Enhanced to:
     - Capture all test phases (setup, call, teardown)
@@ -213,10 +216,12 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         env[SUBPROC_REPORT_PATH] = report_path
 
         # Run pytest in subprocess with timeout
-        cmd = [sys.executable, "-m", "pytest"] + nodeids
+        cmd = [sys.executable, "-m", "pytest", *nodeids]
 
         try:
-            proc = subprocess.run(cmd, env=env, timeout=timeout, capture_output=False)
+            proc = subprocess.run(
+                cmd, env=env, timeout=timeout, capture_output=False, check=False
+            )
             returncode = proc.returncode
             timed_out = False
         except subprocess.TimeoutExpired:
@@ -225,29 +230,29 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
 
         # Gather results from JSONL file
         results: dict[str, dict[str, Any]] = {}
-        if os.path.exists(report_path):
-            with open(report_path, encoding="utf-8") as f:
+        report_file = Path(report_path)
+        if report_file.exists():
+            with report_file.open(encoding="utf-8") as f:
                 for line in f:
-                    line = line.strip()
-                    if not line:
+                    file_line = line.strip()
+                    if not file_line:
                         continue
-                    rec = json.loads(line)
+                    rec = json.loads(file_line)
                     nodeid = rec["nodeid"]
                     when = rec["when"]
 
                     if nodeid not in results:
                         results[nodeid] = {}
                     results[nodeid][when] = rec
-            try:
-                os.remove(report_path)
-            except OSError:
-                pass
+            with contextlib.suppress(OSError):
+                report_file.unlink()
 
         # Handle timeout or crash
         if timed_out:
             msg = (
-                f"Subprocess group={group_name!r} timed out after {timeout} seconds. "
-                f"Increase timeout with --subprocess-timeout or subprocess_timeout ini option."
+                f"Subprocess group={group_name!r} timed out after {timeout} "
+                f"seconds. Increase timeout with --subprocess-timeout or "
+                f"subprocess_timeout ini option."
             )
             for it in group_items:
                 emit_report(it, "call", "failed", longrepr=msg)
@@ -257,7 +262,8 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         if not results:
             msg = (
                 f"Subprocess group={group_name!r} exited with code {returncode} "
-                f"and produced no per-test report. The subprocess may have crashed during collection."
+                f"and produced no per-test report. The subprocess may have "
+                f"crashed during collection."
             )
             for it in group_items:
                 emit_report(it, "call", "failed", longrepr=msg)
