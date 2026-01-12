@@ -1,0 +1,38 @@
+repos:
+    - repo: https://github.com/pre-commit/pre-commit-hooks
+      rev: v6.0.0
+      hooks:
+        - id: end-of-file-fixer
+        - id: trailing-whitespace
+        - id: check-yaml
+          exclude: \.gitlab-ci\.yml|ci_(.*)\.yml
+        - id: check-docstring-first
+        - id: check-executables-have-shebangs
+        - id: check-merge-conflict
+        - id: check-case-conflict
+        - id: check-added-large-files
+          args: ['--maxkb=500']
+        - id: detect-private-key
+
+    - repo: https://github.com/astral-sh/ruff-pre-commit
+      rev: v0.14.7
+      hooks:
+        - id: ruff-check
+          name: isort-pyupgrade
+          args: ["--fix", "--select=I,UP", "--target-version=py311"]
+        - id: ruff-check
+          name: prune-imports
+          args: ["--fix", "--select=F401", "--target-version=py311"]
+        - id: ruff-format
+          name: format-python
+          args: ["--line-length=88"]
+
+    - repo: https://github.com/executablebooks/mdformat
+      rev: 0.7.22
+      hooks:
+        - id: mdformat
+          name: format-markdown
+          additional_dependencies:
+            - mdformat-gfm
+            - mdformat_frontmatter
+          exclude: CHANGELOG.md
