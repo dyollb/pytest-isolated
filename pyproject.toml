@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pytest-isolated"
+dynamic = ["version"]
+description = "Run marked pytest tests in grouped subprocesses (cross-platform)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["pytest>=7.0"]
+license = {text = "MIT"}
+authors = [
+    {name = "pytest-isolated contributors"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Testing",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit",
+    "build",
+]
+test = [
+    "pytest-timeout",
+]
+
+[project.entry-points.pytest11]
+isolated = "pytest_isolated.plugin"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --strict-markers"
+# Plugin configuration options (examples)
+# subprocess_timeout = "300"
+# subprocess_capture_passed = false
+
+[tool.setuptools.dynamic]
+version = {attr = "pytest_isolated.__version__"}
