@@ -18,14 +18,8 @@ repos:
       rev: v0.14.7
       hooks:
         - id: ruff-check
-          name: isort-pyupgrade
-          args: ["--fix", "--select=I,UP", "--target-version=py311"]
-        - id: ruff-check
-          name: prune-imports
-          args: ["--fix", "--select=F401", "--target-version=py311"]
+          args: ["--fix"]
         - id: ruff-format
-          name: format-python
-          args: ["--line-length=88"]
 
     - repo: https://github.com/executablebooks/mdformat
       rev: 0.7.22
