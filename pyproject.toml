@@ -9,7 +9,7 @@ description = "Run marked pytest tests in grouped subprocesses (cross-platform).
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["pytest>=7.0"]
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "pytest-isolated contributors"}
 ]
@@ -17,7 +17,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Framework :: Pytest",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -47,6 +46,12 @@ addopts = "-v --strict-markers"
 
 [tool.setuptools.dynamic]
 version = {attr = "pytest_isolated.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pytest_isolated = ["py.typed"]
 
 [tool.ruff]
 line-length = 88
