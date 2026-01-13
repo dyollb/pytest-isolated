@@ -272,7 +272,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                 f"Subprocess group={group_name!r} timed out after {group_timeout} "
                 f"seconds (execution time: {execution_time:.2f}s). "
                 f"Increase timeout with --subprocess-timeout, subprocess_timeout ini, "
-                f"or @pytest.mark.subprocess(timeout=N)."
+                f"or @pytest.mark.isolated(timeout=N)."
             )
             for it in group_items:
                 emit_report(it, "call", "failed", longrepr=msg)
