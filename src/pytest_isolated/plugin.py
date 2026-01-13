@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -51,8 +52,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
-        "subprocess(group=None): run this test in a grouped fresh Python subprocess; "
-        "tests with the same group run together in one subprocess.",
+        "isolated(group=None, timeout=None): run this test in a grouped "
+        "fresh Python subprocess; tests with the same group run together in "
+        "one subprocess. timeout (seconds) overrides global --subprocess-timeout.",
     )
 
 
@@ -107,10 +109,11 @@ def pytest_collection_modifyitems(
         return
 
     groups: OrderedDict[str, list[pytest.Item]] = OrderedDict()
+    group_timeouts: dict[str, int | None] = {}  # Track timeout per group
     normal: list[pytest.Item] = []
 
     for item in items:
-        m = item.get_closest_marker("subprocess")
+        m = item.get_closest_marker("isolated")
         if not m:
             normal.append(item)
             continue
@@ -119,9 +122,16 @@ def pytest_collection_modifyitems(
         # Default grouping to module path (so you don't accidentally group everything)
         if group is None:
             group = item.nodeid.split("::")[0]
-        groups.setdefault(str(group), []).append(item)
+
+        # Store group-specific timeout (first marker wins)
+        group_key = str(group)
+        if group_key not in group_timeouts:
+            group_timeouts[group_key] = m.kwargs.get("timeout")
+
+        groups.setdefault(group_key, []).append(item)
 
     config._subprocess_groups = groups  # type: ignore[attr-defined]
+    config._subprocess_group_timeouts = group_timeouts  # type: ignore[attr-defined]
     config._subprocess_normal_items = normal  # type: ignore[attr-defined]
 
 
@@ -143,14 +153,17 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
     groups: OrderedDict[str, list[pytest.Item]] = getattr(
         config, "_subprocess_groups", OrderedDict()
     )
+    group_timeouts: dict[str, int | None] = getattr(
+        config, "_subprocess_group_timeouts", {}
+    )
     normal_items: list[pytest.Item] = getattr(
         config, "_subprocess_normal_items", session.items
     )
 
-    # Get timeout configuration
+    # Get default timeout configuration
     timeout_opt = config.getoption("subprocess_timeout", None)
     timeout_ini = config.getini("subprocess_timeout")
-    timeout = timeout_opt or (int(timeout_ini) if timeout_ini else 300)
+    default_timeout = timeout_opt or (int(timeout_ini) if timeout_ini else 300)
 
     # Get capture configuration
     capture_passed = config.getini("subprocess_capture_passed")
@@ -205,6 +218,9 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
     for group_name, group_items in groups.items():
         nodeids = [it.nodeid for it in group_items]
 
+        # Get timeout for this group (marker timeout > global timeout)
+        group_timeout = group_timeouts.get(group_name) or default_timeout
+
         # file where the child will append JSONL records
         with tempfile.NamedTemporaryFile(
             prefix="pytest-subproc-", suffix=".jsonl", delete=False
@@ -215,18 +231,21 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         env[SUBPROC_ENV] = "1"
         env[SUBPROC_REPORT_PATH] = report_path
 
-        # Run pytest in subprocess with timeout
+        # Run pytest in subprocess with timeout, tracking execution time
         cmd = [sys.executable, "-m", "pytest", *nodeids]
+        start_time = time.time()
 
         try:
             proc = subprocess.run(
-                cmd, env=env, timeout=timeout, capture_output=False, check=False
+                cmd, env=env, timeout=group_timeout, capture_output=False, check=False
             )
             returncode = proc.returncode
             timed_out = False
         except subprocess.TimeoutExpired:
             returncode = -1
             timed_out = True
+
+        execution_time = time.time() - start_time
 
         # Gather results from JSONL file
         results: dict[str, dict[str, Any]] = {}
@@ -250,9 +269,10 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         # Handle timeout or crash
         if timed_out:
             msg = (
-                f"Subprocess group={group_name!r} timed out after {timeout} "
-                f"seconds. Increase timeout with --subprocess-timeout or "
-                f"subprocess_timeout ini option."
+                f"Subprocess group={group_name!r} timed out after {group_timeout} "
+                f"seconds (execution time: {execution_time:.2f}s). "
+                f"Increase timeout with --subprocess-timeout, subprocess_timeout ini, "
+                f"or @pytest.mark.subprocess(timeout=N)."
             )
             for it in group_items:
                 emit_report(it, "call", "failed", longrepr=msg)

@@ -9,13 +9,13 @@ def test_basic_subprocess_isolation(pytester):
 
         counter = 0
 
-        @pytest.mark.subprocess(group="group1")
+        @pytest.mark.isolated(group="group1")
         def test_isolated_1():
             global counter
             counter += 1
             assert counter == 1  # Would fail if sharing state
 
-        @pytest.mark.subprocess(group="group2")
+        @pytest.mark.isolated(group="group2")
         def test_isolated_2():
             global counter
             counter += 1
@@ -35,12 +35,12 @@ def test_grouped_subprocess(pytester):
 
         shared_state = []
 
-        @pytest.mark.subprocess(group="mygroup")
+        @pytest.mark.isolated(group="mygroup")
         def test_group_1():
             shared_state.append(1)
             assert len(shared_state) == 1
 
-        @pytest.mark.subprocess(group="mygroup")
+        @pytest.mark.isolated(group="mygroup")
         def test_group_2():
             shared_state.append(2)
             assert len(shared_state) == 2  # Should see previous state
@@ -59,19 +59,19 @@ def test_different_groups_isolated(pytester):
 
         counter = 0
 
-        @pytest.mark.subprocess(group="group1")
+        @pytest.mark.isolated(group="group1")
         def test_group1_a():
             global counter
             counter += 1
             assert counter == 1
 
-        @pytest.mark.subprocess(group="group1")
+        @pytest.mark.isolated(group="group1")
         def test_group1_b():
             global counter
             counter += 1
             assert counter == 2  # Sees previous state in same group
 
-        @pytest.mark.subprocess(group="group2")
+        @pytest.mark.isolated(group="group2")
         def test_group2_a():
             global counter
             counter += 1
@@ -90,7 +90,7 @@ def test_failed_test_output_captured(pytester):
         import pytest
         import sys
 
-        @pytest.mark.subprocess
+        @pytest.mark.isolated
         def test_failing():
             print("stdout message")
             print("stderr message", file=sys.stderr)
@@ -119,7 +119,7 @@ def test_setup_teardown_failures(pytester):
         def failing_fixture():
             raise RuntimeError("Setup failed")
 
-        @pytest.mark.subprocess
+        @pytest.mark.isolated
         def test_with_failing_fixture(failing_fixture):
             pass
     """
@@ -138,7 +138,7 @@ def test_subprocess_crash_handling(pytester):
         """
         import pytest
 
-        @pytest.mark.subprocess
+        @pytest.mark.isolated
         def test_that_fails():
             # Regular failure is properly reported through subprocess
             assert False, "This should be reported as failed"
@@ -158,7 +158,7 @@ def test_timeout_handling(pytester):
         import pytest
         import time
 
-        @pytest.mark.subprocess
+        @pytest.mark.isolated
         def test_timeout():
             time.sleep(10)
     """
@@ -167,6 +167,30 @@ def test_timeout_handling(pytester):
     result = pytester.runpytest("-v", "--subprocess-timeout=1")
     result.assert_outcomes(failed=1)
     assert "timed out" in result.stdout.str()
+
+
+def test_marker_timeout(pytester):
+    """Test that per-marker timeout overrides global timeout."""
+    pytester.makepyfile(
+        """
+        import pytest
+        import time
+
+        @pytest.mark.isolated(group="slow", timeout=1)
+        def test_marker_timeout():
+            time.sleep(5)
+
+        @pytest.mark.isolated(group="fast", timeout=10)
+        def test_marker_no_timeout():
+            time.sleep(0.1)
+    """
+    )
+
+    result = pytester.runpytest("-v", "--subprocess-timeout=100")
+    result.assert_outcomes(passed=1, failed=1)
+    # test_marker_timeout should fail (1s timeout)
+    assert "test_marker_timeout" in result.stdout.str()
+    assert "timed out after 1" in result.stdout.str()
 
 
 def test_mixed_subprocess_and_normal(pytester):
@@ -178,7 +202,7 @@ def test_mixed_subprocess_and_normal(pytester):
         # Note: When testing with pytester, this file runs in its own process
         # So we just verify that mixing subprocess and normal tests works
 
-        @pytest.mark.subprocess
+        @pytest.mark.isolated
         def test_isolated():
             assert True
 
@@ -202,12 +226,12 @@ def test_default_grouping_by_module(pytester):
 
         state = []
 
-        @pytest.mark.subprocess
+        @pytest.mark.isolated
         def test_a():
             state.append(1)
             assert len(state) == 1
 
-        @pytest.mark.subprocess
+        @pytest.mark.isolated
         def test_b():
             state.append(2)
             assert len(state) == 2  # Same module, same subprocess
@@ -217,7 +241,7 @@ def test_default_grouping_by_module(pytester):
 
         state = []
 
-        @pytest.mark.subprocess
+        @pytest.mark.isolated
         def test_c():
             state.append(1)
             assert len(state) == 1  # Different module, different subprocess
@@ -234,7 +258,7 @@ def test_skipped_test_handling(pytester):
         """
         import pytest
 
-        @pytest.mark.subprocess
+        @pytest.mark.isolated
         @pytest.mark.skip(reason="Testing skip")
         def test_skipped():
             pass
@@ -251,7 +275,7 @@ def test_xfail_test_handling(pytester):
         """
         import pytest
 
-        @pytest.mark.subprocess
+        @pytest.mark.isolated
         @pytest.mark.xfail(reason="Expected to fail")
         def test_xfail():
             assert False
@@ -268,7 +292,7 @@ def test_parametrized_tests(pytester):
         """
         import pytest
 
-        @pytest.mark.subprocess(group="params")
+        @pytest.mark.isolated(group="params")
         @pytest.mark.parametrize("value", [1, 2, 3])
         def test_param(value):
             assert value in [1, 2, 3]
@@ -285,11 +309,11 @@ def test_junit_xml_output(pytester):
         """
         import pytest
 
-        @pytest.mark.subprocess
+        @pytest.mark.isolated
         def test_pass():
             assert True
 
-        @pytest.mark.subprocess
+        @pytest.mark.isolated
         def test_fail():
             assert False, "Expected failure"
     """
@@ -323,7 +347,7 @@ def test_capture_passed_config(pytester):
         """
         import pytest
 
-        @pytest.mark.subprocess
+        @pytest.mark.isolated
         def test_pass():
             print("This output is captured")
             assert True
@@ -343,7 +367,7 @@ def test_no_infinite_recursion(pytester):
         import pytest
         import os
 
-        @pytest.mark.subprocess
+        @pytest.mark.isolated
         def test_check_env():
             # Verify we're in a subprocess
             assert os.environ.get("PYTEST_RUNNING_IN_SUBPROCESS") == "1"
@@ -361,7 +385,7 @@ def test_test_duration_tracking(pytester):
         import pytest
         import time
 
-        @pytest.mark.subprocess
+        @pytest.mark.isolated
         def test_with_duration():
             time.sleep(0.1)
             assert True
@@ -382,13 +406,13 @@ def test_no_subprocess_option(pytester):
 
         counter = 0
 
-        @pytest.mark.subprocess(group="test_group")
+        @pytest.mark.isolated(group="test_group")
         def test_one():
             global counter
             counter += 1
             assert counter == 1
 
-        @pytest.mark.subprocess(group="test_group")
+        @pytest.mark.isolated(group="test_group")
         def test_two():
             global counter
             counter += 1
