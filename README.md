@@ -63,30 +63,30 @@ Tests without an explicit group are automatically grouped by module.
 ### Command Line
 
 ```bash
-# Set subprocess timeout (seconds)
-pytest --subprocess-timeout=60
+# Set isolated test timeout (seconds)
+pytest --isolated-timeout=60
 
 # Disable subprocess isolation for debugging
-pytest --no-subprocess
+pytest --no-isolation
 
 # Combine with pytest debugger
-pytest --no-subprocess --pdb
+pytest --no-isolation --pdb
 ```
 
 ### pytest.ini / pyproject.toml
 
 ```ini
 [pytest]
-subprocess_timeout = 300
-subprocess_capture_passed = false
+isolated_timeout = 300
+isolated_capture_passed = false
 ```
 
 Or in `pyproject.toml`:
 
 ```toml
 [tool.pytest.ini_options]
-subprocess_timeout = "300"
-subprocess_capture_passed = false
+isolated_timeout = "300"
+isolated_capture_passed = false
 ```
 
 ## Use Cases
@@ -152,7 +152,7 @@ pytest --junitxml=report.xml --durations=10
 
 **Fixtures**: Module/session fixtures run in each subprocess group. Cannot share fixture objects between parent and subprocess.
 
-**Debugging**: Use `--no-subprocess` to run all tests in the main process for easier debugging with `pdb` or IDE debuggers.
+**Debugging**: Use `--no-isolation` to run all tests in the main process for easier debugging with `pdb` or IDE debuggers.
 
 **Performance**: Subprocess creation adds ~100-500ms per group. Group related tests to minimize overhead.
 
@@ -161,7 +161,7 @@ pytest --junitxml=report.xml --durations=10
 ### Timeout Handling
 
 ```bash
-pytest --subprocess-timeout=30
+pytest --isolated-timeout=30
 ```
 
 Timeout errors are clearly reported with the group name and timeout duration.
@@ -182,9 +182,9 @@ if os.environ.get("PYTEST_RUNNING_IN_SUBPROCESS") == "1":
 
 ## Troubleshooting
 
-**Tests timing out**: Increase timeout with `--subprocess-timeout=600`
+**Tests timing out**: Increase timeout with `--isolated-timeout=600`
 
-**Missing output**: Enable capture for passed tests with `subprocess_capture_passed = true`
+**Missing output**: Enable capture for passed tests with `isolated_capture_passed = true`
 
 **Subprocess crashes**: Check for segfaults, OOM, or signal issues. Run with `-v` for details.
 

@@ -22,27 +22,27 @@ SUBPROC_REPORT_PATH = "PYTEST_SUBPROCESS_REPORT_PATH"
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     """Add configuration options for subprocess isolation."""
-    group = parser.getgroup("subprocess")
+    group = parser.getgroup("isolated")
     group.addoption(
-        "--subprocess-timeout",
+        "--isolated-timeout",
         type=int,
         default=None,
-        help="Timeout in seconds for subprocess groups (default: 300)",
+        help="Timeout in seconds for isolated test groups (default: 300)",
     )
     group.addoption(
-        "--no-subprocess",
+        "--no-isolation",
         action="store_true",
         default=False,
         help="Disable subprocess isolation (for debugging)",
     )
     parser.addini(
-        "subprocess_timeout",
+        "isolated_timeout",
         type="string",
         default="300",
-        help="Default timeout in seconds for subprocess groups",
+        help="Default timeout in seconds for isolated test groups",
     )
     parser.addini(
-        "subprocess_capture_passed",
+        "isolated_capture_passed",
         type="bool",
         default=False,
         help="Capture output for passed tests (default: False)",
@@ -54,7 +54,7 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "isolated(group=None, timeout=None): run this test in a grouped "
         "fresh Python subprocess; tests with the same group run together in "
-        "one subprocess. timeout (seconds) overrides global --subprocess-timeout.",
+        "one subprocess. timeout (seconds) overrides global --isolated-timeout.",
     )
 
 
@@ -102,8 +102,8 @@ def pytest_collection_modifyitems(
     if os.environ.get(SUBPROC_ENV) == "1":
         return  # child should not do grouping
 
-    # If --no-subprocess is set, treat all tests as normal (no subprocess isolation)
-    if config.getoption("no_subprocess", False):
+    # If --no-isolation is set, treat all tests as normal (no subprocess isolation)
+    if config.getoption("no_isolation", False):
         config._subprocess_groups = OrderedDict()  # type: ignore[attr-defined]
         config._subprocess_normal_items = items  # type: ignore[attr-defined]
         return
@@ -161,12 +161,12 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
     )
 
     # Get default timeout configuration
-    timeout_opt = config.getoption("subprocess_timeout", None)
-    timeout_ini = config.getini("subprocess_timeout")
+    timeout_opt = config.getoption("isolated_timeout", None)
+    timeout_ini = config.getini("isolated_timeout")
     default_timeout = timeout_opt or (int(timeout_ini) if timeout_ini else 300)
 
     # Get capture configuration
-    capture_passed = config.getini("subprocess_capture_passed")
+    capture_passed = config.getini("isolated_capture_passed")
 
     def emit_report(
         item: pytest.Item,
@@ -271,7 +271,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
             msg = (
                 f"Subprocess group={group_name!r} timed out after {group_timeout} "
                 f"seconds (execution time: {execution_time:.2f}s). "
-                f"Increase timeout with --subprocess-timeout, subprocess_timeout ini, "
+                f"Increase timeout with --isolated-timeout, isolated_timeout ini, "
                 f"or @pytest.mark.isolated(timeout=N)."
             )
             for it in group_items:

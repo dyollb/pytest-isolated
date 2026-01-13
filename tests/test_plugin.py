@@ -164,7 +164,7 @@ def test_timeout_handling(pytester):
     """
     )
 
-    result = pytester.runpytest("-v", "--subprocess-timeout=1")
+    result = pytester.runpytest("-v", "--isolated-timeout=1")
     result.assert_outcomes(failed=1)
     assert "timed out" in result.stdout.str()
 
@@ -186,7 +186,7 @@ def test_marker_timeout(pytester):
     """
     )
 
-    result = pytester.runpytest("-v", "--subprocess-timeout=100")
+    result = pytester.runpytest("-v", "--isolated-timeout=100")
     result.assert_outcomes(passed=1, failed=1)
     # test_marker_timeout should fail (1s timeout)
     assert "test_marker_timeout" in result.stdout.str()
@@ -333,13 +333,13 @@ def test_junit_xml_output(pytester):
 
 
 def test_capture_passed_config(pytester):
-    """Test subprocess_capture_passed configuration option."""
+    """Test isolated_capture_passed configuration option."""
     # Note: Currently output capture for passed tests requires using sections
     # This test verifies the configuration is recognized without warnings
     pytester.makeini(
         """
         [tool:pytest]
-        subprocess_timeout = 300
+        isolated_timeout = 300
     """
     )
 
@@ -398,8 +398,8 @@ def test_test_duration_tracking(pytester):
     assert "test_with_duration" in result.stdout.str()
 
 
-def test_no_subprocess_option(pytester):
-    """Test that --no-subprocess disables subprocess isolation."""
+def test_no_isolation_option(pytester):
+    """Test that --no-isolation disables subprocess isolation."""
     pytester.makepyfile(
         """
         import pytest
@@ -416,10 +416,10 @@ def test_no_subprocess_option(pytester):
         def test_two():
             global counter
             counter += 1
-            # With --no-subprocess, both tests run in same process and share state
+            # With --no-isolation, both tests run in same process and share state
             assert counter == 2
     """
     )
 
-    result = pytester.runpytest("-v", "--no-subprocess")
+    result = pytester.runpytest("-v", "--no-isolation")
     result.assert_outcomes(passed=2)

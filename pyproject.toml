@@ -41,8 +41,8 @@ isolated = "pytest_isolated.plugin"
 testpaths = ["tests"]
 addopts = "-v --strict-markers"
 # Plugin configuration options (examples)
-# subprocess_timeout = "300"
-# subprocess_capture_passed = false
+# isolated_timeout = "300"
+# isolated_capture_passed = false
 
 [tool.setuptools.dynamic]
 version = {attr = "pytest_isolated.__version__"}
