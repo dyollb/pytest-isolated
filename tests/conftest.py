@@ -10,37 +10,40 @@ pytest_plugins = ["pytester"]
 class _SingletonApplication:
     """Mock singleton application for testing isolation.
 
-    Implements proper singleton pattern - only initializes once per process.
+    Implements proper singleton pattern - raises error on re-initialization
+    to match real-world singleton behavior.
     """
 
     _instance: _SingletonApplication | None = None
-    _initialized: bool = False
 
     def __new__(cls) -> _SingletonApplication:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
+            cls._instance._init_called = False
         return cls._instance
 
     def __init__(self) -> None:
-        # Only initialize once - singleton pattern
-        if not _SingletonApplication._initialized:
-            _SingletonApplication._initialized = True
-            self.ApplicationName = "TestApplication"
-            self.state: dict[str, str] = {}
+        # Raise error if already initialized - mimics real singleton behavior
+        if self._init_called:
+            msg = "SingletonApplication already initialized"
+            raise RuntimeError(msg)
+        self._init_called = True
+        self.ApplicationName = "TestApplication"
+        self.state: dict[str, str] = {}
 
     @classmethod
     def reset(cls) -> None:
         """Reset singleton for testing purposes."""
         cls._instance = None
-        cls._initialized = False
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def application() -> _SingletonApplication:
     """Provide a singleton application instance.
 
-    This fixture demonstrates singleton behavior - within the same process,
-    all tests will get the same instance. Across isolated processes,
-    each process will have its own singleton.
+    Uses session scope to ensure the fixture is only called once per subprocess.
+    This matches the singleton pattern where initialization should only happen once.
+    Within the same isolated process/group, all tests share the same instance.
+    Across different isolated processes, each gets its own singleton.
     """
     return _SingletonApplication()

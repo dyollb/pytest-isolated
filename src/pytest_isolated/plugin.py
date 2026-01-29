@@ -149,9 +149,9 @@ def pytest_collection_modifyitems(
             continue
 
         group = m.kwargs.get("group")
-        # Default grouping to module path (so you don't accidentally group everything)
+        # Default to nodeid for unique per-test isolation
         if group is None:
-            group = item.nodeid.split("::")[0]
+            group = item.nodeid
 
         # Store group-specific timeout (first marker wins)
         group_key = str(group)

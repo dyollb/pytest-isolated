@@ -56,7 +56,7 @@ def test_with_timeout():
     expensive_operation()
 ```
 
-Tests without an explicit group are automatically grouped by module.
+**Note:** Tests without an explicit `group` parameter each run in their own unique subprocess for maximum isolation.
 
 ## Configuration
 

@@ -1,7 +1,7 @@
 import pytest
 
 
-@pytest.mark.isolated(group="1")
+@pytest.mark.isolated
 def test_application1(application) -> None:
     """Test that application singleton works in isolated process.
 
@@ -17,7 +17,7 @@ def test_application1(application) -> None:
     application.state["test1"] = "modified_by_test1"
 
 
-@pytest.mark.isolated(group="2")
+@pytest.mark.isolated
 def test_application2(application) -> None:
     """Test that different group gets a fresh singleton in its own process.
 
@@ -37,7 +37,7 @@ def test_application2(application) -> None:
     application.state["test2"] = "modified_by_test2"
 
 
-@pytest.mark.isolated(group="3")
+@pytest.mark.isolated
 @pytest.mark.xfail(
     reason="This test is expected to segfault. "
     "If properly isolated, then it will be a FAILURE otherwise it will be an ERROR."

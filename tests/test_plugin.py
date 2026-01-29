@@ -221,7 +221,7 @@ def test_mixed_subprocess_and_normal(pytester: Pytester):
 
 
 def test_default_grouping_by_module(pytester: Pytester):
-    """Test that tests without explicit group are grouped by module."""
+    """Test that tests without explicit group each run in their own subprocess."""
     pytester.makepyfile(
         test_mod1="""
         import pytest
@@ -236,7 +236,7 @@ def test_default_grouping_by_module(pytester: Pytester):
         @pytest.mark.isolated
         def test_b():
             state.append(2)
-            assert len(state) == 2  # Same module, same subprocess
+            assert len(state) == 1  # Different subprocess, fresh state
     """,
         test_mod2="""
         import pytest
@@ -246,7 +246,7 @@ def test_default_grouping_by_module(pytester: Pytester):
         @pytest.mark.isolated
         def test_c():
             state.append(1)
-            assert len(state) == 1  # Different module, different subprocess
+            assert len(state) == 1  # Different subprocess, fresh state
     """,
     )
 
