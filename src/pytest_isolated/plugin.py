@@ -33,7 +33,7 @@ _EXCLUDED_ARG_PREFIXES: Final = (
 )
 
 # Plugin-specific options that take values and should not be forwarded
-_PLUGIN_OPTIONS_WITH_VALUE: Final = ("--isolated-timeout",)
+_PLUGIN_OPTIONS_WITH_VALUE: Final = ("--isolated-timeout", "--rootdir")
 
 # Plugin-specific flag options that should not be forwarded
 _PLUGIN_FLAGS: Final = ("--no-isolation",)
@@ -293,10 +293,10 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
 
         # Forward relevant pytest options to subprocess for consistency
         # Only forward specific options that affect test execution behavior
-        forwarded_args = []
         if hasattr(config, "invocation_params") and hasattr(
             config.invocation_params, "args"
         ):
+            forwarded_args = []
             skip_next = False
 
             for arg in config.invocation_params.args:
@@ -309,12 +309,6 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                     skip_next = True
                     continue
                 if arg in _PLUGIN_FLAGS:
-                    continue
-
-                # Skip --rootdir (we set it explicitly later)
-                if arg == "--rootdir" or arg.startswith("--rootdir="):
-                    if arg == "--rootdir":
-                        skip_next = True
                     continue
 
                 # Skip excluded reporting/output options
