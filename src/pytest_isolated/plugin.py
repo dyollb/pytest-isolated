@@ -19,25 +19,6 @@ SUBPROC_ENV: Final = "PYTEST_RUNNING_IN_SUBPROCESS"
 # Parent tells child where to write JSONL records per test call
 SUBPROC_REPORT_PATH: Final = "PYTEST_SUBPROCESS_REPORT_PATH"
 
-# Arguments to exclude when forwarding options to subprocess
-_EXCLUDED_ARG_PREFIXES: Final = (
-    "--junitxml=",
-    "--html=",
-    "--result-log=",
-    "--collect-only",
-    "--setup-only",
-    "--setup-plan",
-    "-x",
-    "--exitfirst",
-    "--maxfail=",
-)
-
-# Plugin-specific options that take values and should not be forwarded
-_PLUGIN_OPTIONS_WITH_VALUE: Final = ("--isolated-timeout", "--rootdir")
-
-# Plugin-specific flag options that should not be forwarded
-_PLUGIN_FLAGS: Final = ("--no-isolation",)
-
 # Options that should be forwarded to subprocess (flags without values)
 _FORWARD_FLAGS: Final = {
     "-v",
@@ -293,30 +274,15 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
 
         # Forward relevant pytest options to subprocess for consistency
         # Only forward specific options that affect test execution behavior
+        forwarded_args = []
         if hasattr(config, "invocation_params") and hasattr(
             config.invocation_params, "args"
         ):
-            forwarded_args = []
             skip_next = False
 
             for arg in config.invocation_params.args:
                 if skip_next:
                     skip_next = False
-                    continue
-
-                # Skip our plugin-specific options
-                if arg in _PLUGIN_OPTIONS_WITH_VALUE:
-                    skip_next = True
-                    continue
-                if arg in _PLUGIN_FLAGS:
-                    continue
-
-                # Skip excluded reporting/output options
-                if any(arg.startswith(prefix) for prefix in _EXCLUDED_ARG_PREFIXES):
-                    if "=" not in arg:
-                        skip_next = True
-                    continue
-                if arg in ("-x", "--exitfirst"):
                     continue
 
                 # Forward only explicitly allowed options
