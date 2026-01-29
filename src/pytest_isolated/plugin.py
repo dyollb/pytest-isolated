@@ -9,19 +9,53 @@ import tempfile
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import Any, Final, Literal, TypedDict, cast
 
 import pytest
 
 # Guard to prevent infinite recursion (parent spawns child; child must not spawn again)
-SUBPROC_ENV = "PYTEST_RUNNING_IN_SUBPROCESS"
+SUBPROC_ENV: Final = "PYTEST_RUNNING_IN_SUBPROCESS"
 
 # Parent tells child where to write JSONL records per test call
-SUBPROC_REPORT_PATH = "PYTEST_SUBPROCESS_REPORT_PATH"
+SUBPROC_REPORT_PATH: Final = "PYTEST_SUBPROCESS_REPORT_PATH"
+
+# Arguments to exclude when forwarding options to subprocess
+_EXCLUDED_ARG_PREFIXES: Final = (
+    "--junitxml=",
+    "--html=",
+    "--result-log=",
+    "--collect-only",
+    "--setup-only",
+    "--setup-plan",
+    "-x",
+    "--exitfirst",
+    "--maxfail=",
+)
+
+# Plugin-specific options that take values and should not be forwarded
+_PLUGIN_OPTIONS_WITH_VALUE: Final = ("--isolated-timeout",)
+
+# Plugin-specific flag options that should not be forwarded
+_PLUGIN_FLAGS: Final = ("--no-isolation",)
+
+
+class _TestRecord(TypedDict, total=False):
+    """Structure for test phase results from subprocess."""
+
+    nodeid: str
+    when: Literal["setup", "call", "teardown"]
+    outcome: Literal["passed", "failed", "skipped"]
+    longrepr: str
+    duration: float
+    stdout: str
+    stderr: str
+    keywords: list[str]
+    sections: list[tuple[str, str]]
+    user_properties: list[tuple[str, Any]]
+    wasxfail: bool
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Add configuration options for subprocess isolation."""
     group = parser.getgroup("isolated")
     group.addoption(
         "--isolated-timeout",
@@ -62,17 +96,13 @@ def pytest_configure(config: pytest.Config) -> None:
 # CHILD MODE: record results + captured output per test phase
 # ----------------------------
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """
-    In the child process, write one JSON line per test phase (setup/call/teardown)
-    containing outcome, captured stdout/stderr, duration, and other metadata.
-    The parent will aggregate and re-emit this info.
-    """
+    """Write test phase results to a JSONL file when running in subprocess mode."""
     path = os.environ.get(SUBPROC_REPORT_PATH)
     if not path:
         return
 
     # Capture ALL phases (setup, call, teardown), not just call
-    rec = {
+    rec: _TestRecord = {
         "nodeid": report.nodeid,
         "when": report.when,  # setup, call, or teardown
         "outcome": report.outcome,  # passed/failed/skipped
@@ -96,9 +126,6 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    """
-    Partition items into subprocess groups + normal items and stash on config.
-    """
     if os.environ.get(SUBPROC_ENV) == "1":
         return  # child should not do grouping
 
@@ -136,23 +163,18 @@ def pytest_collection_modifyitems(
 
 
 def pytest_runtestloop(session: pytest.Session) -> int | None:
-    """
-    Run each subprocess group in its own subprocess once;
-    then run normal tests in-process.
+    """Execute isolated test groups in subprocesses and remaining tests in-process.
 
-    Enhanced to:
-    - Capture all test phases (setup, call, teardown)
-    - Support configurable timeouts
-    - Properly handle crashes and missing results
-    - Integrate with pytest's reporting system
+    Any subprocess timeouts are caught and reported as test failures; the
+    subprocess.TimeoutExpired exception is not propagated to the caller.
     """
     if os.environ.get(SUBPROC_ENV) == "1":
         return None  # child runs the normal loop
 
     config = session.config
-    groups: OrderedDict[str, list[pytest.Item]] = getattr(
-        config, "_subprocess_groups", OrderedDict()
-    )
+    groups = getattr(config, "_subprocess_groups", OrderedDict())
+    if not isinstance(groups, OrderedDict):
+        groups = OrderedDict()
     group_timeouts: dict[str, int | None] = getattr(
         config, "_subprocess_group_timeouts", {}
     )
@@ -170,8 +192,8 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
 
     def emit_report(
         item: pytest.Item,
-        when: str,
-        outcome: str,
+        when: Literal["setup", "call", "teardown"],
+        outcome: Literal["passed", "failed", "skipped"],
         longrepr: str = "",
         duration: float = 0.0,
         stdout: str = "",
@@ -180,10 +202,6 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         user_properties: list[tuple[str, Any]] | None = None,
         wasxfail: bool = False,
     ) -> None:
-        """
-        Emit a synthetic report for the given item and phase.
-        Attach captured output based on outcome and configuration.
-        """
         call = pytest.CallInfo.from_call(lambda: None, when=when)
         rep = pytest.TestReport.from_item_and_call(item, call)
         rep.outcome = outcome
@@ -198,7 +216,8 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         # For skipped tests, longrepr needs to be a tuple (path, lineno, reason)
         if outcome == "skipped" and longrepr:
             # Parse longrepr or create simple tuple
-            rep.longrepr = (str(item.fspath), item.location[1], longrepr)
+            lineno = item.location[1] if item.location[1] is not None else -1
+            rep.longrepr = (str(item.fspath), lineno, longrepr)  # type: ignore[assignment]
         elif outcome == "failed" and longrepr:
             rep.longrepr = longrepr
 
@@ -232,12 +251,73 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         env[SUBPROC_REPORT_PATH] = report_path
 
         # Run pytest in subprocess with timeout, tracking execution time
-        cmd = [sys.executable, "-m", "pytest", *nodeids]
+        # Preserve rootdir and run subprocess from correct directory to ensure
+        # nodeids can be resolved
+        cmd = [sys.executable, "-m", "pytest"]
+
+        # Forward relevant pytest options to subprocess for consistency
+        # We filter out options that would interfere with subprocess execution
+        if hasattr(config, "invocation_params") and hasattr(
+            config.invocation_params, "args"
+        ):
+            forwarded_args = []
+            skip_next = False
+
+            for arg in config.invocation_params.args:
+                if skip_next:
+                    skip_next = False
+                    continue
+
+                # Skip our own plugin options
+                if arg in _PLUGIN_OPTIONS_WITH_VALUE:
+                    skip_next = True
+                    continue
+                if arg in _PLUGIN_FLAGS:
+                    continue
+
+                # Skip output/reporting options that would conflict
+                if any(arg.startswith(prefix) for prefix in _EXCLUDED_ARG_PREFIXES):
+                    continue
+                if arg in ("-x", "--exitfirst"):
+                    continue
+
+                # Skip test file paths and nodeids - we provide our own
+                if not arg.startswith("-") and ("::" in arg or arg.endswith(".py")):
+                    continue
+
+                forwarded_args.append(arg)
+
+            cmd.extend(forwarded_args)
+
+        # Pass rootdir to subprocess to ensure it uses the same project root
+        # (config.rootpath is available in pytest 7.0+, which is our minimum version)
+        if config.rootpath:
+            cmd.extend(["--rootdir", str(config.rootpath)])
+
+        # Add the test nodeids
+        cmd.extend(nodeids)
+
         start_time = time.time()
+
+        # Determine the working directory for the subprocess
+        # Use rootpath if set, otherwise use invocation directory
+        # This ensures nodeids (which are relative to rootpath) can be resolved
+        subprocess_cwd = None
+        if config.rootpath:
+            subprocess_cwd = str(config.rootpath)
+        elif hasattr(config, "invocation_params") and hasattr(
+            config.invocation_params, "dir"
+        ):
+            subprocess_cwd = str(config.invocation_params.dir)
 
         try:
             proc = subprocess.run(
-                cmd, env=env, timeout=group_timeout, capture_output=False, check=False
+                cmd,
+                env=env,
+                timeout=group_timeout,
+                capture_output=False,
+                check=False,
+                cwd=subprocess_cwd,
             )
             returncode = proc.returncode
             timed_out = False
@@ -248,7 +328,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         execution_time = time.time() - start_time
 
         # Gather results from JSONL file
-        results: dict[str, dict[str, Any]] = {}
+        results: dict[str, dict[str, _TestRecord]] = {}
         report_file = Path(report_path)
         if report_file.exists():
             with report_file.open(encoding="utf-8") as f:
@@ -256,7 +336,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                     file_line = line.strip()
                     if not file_line:
                         continue
-                    rec = json.loads(file_line)
+                    rec = cast(_TestRecord, json.loads(file_line))
                     nodeid = rec["nodeid"]
                     when = rec["when"]
 
@@ -295,7 +375,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
             node_results = results.get(it.nodeid, {})
 
             # Emit setup, call, teardown in order
-            for when in ["setup", "call", "teardown"]:
+            for when in ["setup", "call", "teardown"]:  # type: ignore[assignment]
                 if when not in node_results:
                     # If missing a phase, synthesize a passing one
                     if when == "call" and not node_results:
@@ -312,7 +392,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                 rec = node_results[when]
                 emit_report(
                     it,
-                    when=when,
+                    when=when,  # type: ignore[arg-type]
                     outcome=rec["outcome"],
                     longrepr=rec.get("longrepr", ""),
                     duration=rec.get("duration", 0.0),
