@@ -9,7 +9,7 @@ import tempfile
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal, TypedDict
 
 import pytest
 
@@ -36,8 +36,23 @@ _EXCLUDED_ARG_PREFIXES: Final = (
 _PLUGIN_OPTIONS: Final = ("--isolated-timeout", "--no-isolation")
 
 
+class _TestRecord(TypedDict, total=False):
+    """Structure for test phase results from subprocess."""
+
+    nodeid: str
+    when: Literal["setup", "call", "teardown"]
+    outcome: Literal["passed", "failed", "skipped"]
+    longrepr: str
+    duration: float
+    stdout: str
+    stderr: str
+    keywords: list[str]
+    sections: list[tuple[str, str]]
+    user_properties: list[tuple[str, Any]]
+    wasxfail: bool
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Add configuration options for subprocess isolation."""
     group = parser.getgroup("isolated")
     group.addoption(
         "--isolated-timeout",
@@ -78,11 +93,7 @@ def pytest_configure(config: pytest.Config) -> None:
 # CHILD MODE: record results + captured output per test phase
 # ----------------------------
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """
-    In the child process, write one JSON line per test phase (setup/call/teardown)
-    containing outcome, captured stdout/stderr, duration, and other metadata.
-    The parent will aggregate and re-emit this info.
-    """
+    """Raises FileNotFoundError if report path doesn't exist."""
     path = os.environ.get(SUBPROC_REPORT_PATH)
     if not path:
         return
@@ -112,9 +123,6 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    """
-    Partition items into subprocess groups + normal items and stash on config.
-    """
     if os.environ.get(SUBPROC_ENV) == "1":
         return  # child should not do grouping
 
@@ -152,23 +160,14 @@ def pytest_collection_modifyitems(
 
 
 def pytest_runtestloop(session: pytest.Session) -> int | None:
-    """
-    Run each subprocess group in its own subprocess once;
-    then run normal tests in-process.
-
-    Enhanced to:
-    - Capture all test phases (setup, call, teardown)
-    - Support configurable timeouts
-    - Properly handle crashes and missing results
-    - Integrate with pytest's reporting system
-    """
+    """Raises subprocess.TimeoutExpired if subprocess times out."""
     if os.environ.get(SUBPROC_ENV) == "1":
         return None  # child runs the normal loop
 
     config = session.config
-    groups: OrderedDict[str, list[pytest.Item]] = getattr(
-        config, "_subprocess_groups", OrderedDict()
-    )
+    groups = getattr(config, "_subprocess_groups", OrderedDict())
+    if not isinstance(groups, OrderedDict):
+        groups = OrderedDict()
     group_timeouts: dict[str, int | None] = getattr(
         config, "_subprocess_group_timeouts", {}
     )
@@ -186,8 +185,8 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
 
     def emit_report(
         item: pytest.Item,
-        when: str,
-        outcome: str,
+        when: Literal["setup", "call", "teardown"],
+        outcome: Literal["passed", "failed", "skipped"],
         longrepr: str = "",
         duration: float = 0.0,
         stdout: str = "",
@@ -196,10 +195,6 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         user_properties: list[tuple[str, Any]] | None = None,
         wasxfail: bool = False,
     ) -> None:
-        """
-        Emit a synthetic report for the given item and phase.
-        Attach captured output based on outcome and configuration.
-        """
         call = pytest.CallInfo.from_call(lambda: None, when=when)
         rep = pytest.TestReport.from_item_and_call(item, call)
         rep.outcome = outcome
@@ -214,7 +209,8 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         # For skipped tests, longrepr needs to be a tuple (path, lineno, reason)
         if outcome == "skipped" and longrepr:
             # Parse longrepr or create simple tuple
-            rep.longrepr = (str(item.fspath), item.location[1], longrepr)
+            lineno = item.location[1] if item.location[1] is not None else -1
+            rep.longrepr = (str(item.fspath), lineno, longrepr)  # type: ignore[assignment]
         elif outcome == "failed" and longrepr:
             rep.longrepr = longrepr
 
@@ -387,7 +383,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                 rec = node_results[when]
                 emit_report(
                     it,
-                    when=when,
+                    when=when,  # type: ignore[arg-type]
                     outcome=rec["outcome"],
                     longrepr=rec.get("longrepr", ""),
                     duration=rec.get("duration", 0.0),

@@ -1,7 +1,9 @@
 """Test the pytest-isolated plugin using pytester fixture."""
 
+from pytest import Pytester
 
-def test_basic_subprocess_isolation(pytester):
+
+def test_basic_subprocess_isolation(pytester: Pytester):
     """Test that subprocess marker runs tests in isolation when in different groups."""
     pytester.makepyfile(
         """
@@ -27,7 +29,7 @@ def test_basic_subprocess_isolation(pytester):
     result.assert_outcomes(passed=2)
 
 
-def test_grouped_subprocess(pytester):
+def test_grouped_subprocess(pytester: Pytester):
     """Test that tests with same group run in one subprocess and share state."""
     pytester.makepyfile(
         """
@@ -51,7 +53,7 @@ def test_grouped_subprocess(pytester):
     result.assert_outcomes(passed=2)
 
 
-def test_different_groups_isolated(pytester):
+def test_different_groups_isolated(pytester: Pytester):
     """Test that different groups run in separate subprocesses."""
     pytester.makepyfile(
         """
@@ -83,7 +85,7 @@ def test_different_groups_isolated(pytester):
     result.assert_outcomes(passed=3)
 
 
-def test_failed_test_output_captured(pytester):
+def test_failed_test_output_captured(pytester: Pytester):
     """Test that failed test output is captured and displayed."""
     pytester.makepyfile(
         """
@@ -109,7 +111,7 @@ def test_failed_test_output_captured(pytester):
     )
 
 
-def test_setup_teardown_failures(pytester):
+def test_setup_teardown_failures(pytester: Pytester):
     """Test that setup and teardown failures are properly reported."""
     pytester.makepyfile(
         """
@@ -130,7 +132,7 @@ def test_setup_teardown_failures(pytester):
     result.stdout.fnmatch_lines(["*Setup failed*"])
 
 
-def test_subprocess_crash_handling(pytester):
+def test_subprocess_crash_handling(pytester: Pytester):
     """Test that subprocess failures are properly reported."""
     # Note: os._exit() during test collection crashes before our plugin can report
     # So we test a crash that happens during test execution
@@ -151,7 +153,7 @@ def test_subprocess_crash_handling(pytester):
     assert "This should be reported as failed" in result.stdout.str()
 
 
-def test_timeout_handling(pytester):
+def test_timeout_handling(pytester: Pytester):
     """Test that timeout is enforced and reported."""
     pytester.makepyfile(
         """
@@ -169,7 +171,7 @@ def test_timeout_handling(pytester):
     assert "timed out" in result.stdout.str()
 
 
-def test_marker_timeout(pytester):
+def test_marker_timeout(pytester: Pytester):
     """Test that per-marker timeout overrides global timeout."""
     pytester.makepyfile(
         """
@@ -193,7 +195,7 @@ def test_marker_timeout(pytester):
     assert "timed out after 1" in result.stdout.str()
 
 
-def test_mixed_subprocess_and_normal(pytester):
+def test_mixed_subprocess_and_normal(pytester: Pytester):
     """Test that subprocess and normal tests can coexist."""
     pytester.makepyfile(
         """
@@ -218,7 +220,7 @@ def test_mixed_subprocess_and_normal(pytester):
     result.assert_outcomes(passed=3)
 
 
-def test_default_grouping_by_module(pytester):
+def test_default_grouping_by_module(pytester: Pytester):
     """Test that tests without explicit group are grouped by module."""
     pytester.makepyfile(
         test_mod1="""
@@ -252,7 +254,7 @@ def test_default_grouping_by_module(pytester):
     result.assert_outcomes(passed=3)
 
 
-def test_skipped_test_handling(pytester):
+def test_skipped_test_handling(pytester: Pytester):
     """Test that skipped tests are properly reported."""
     pytester.makepyfile(
         """
@@ -269,7 +271,7 @@ def test_skipped_test_handling(pytester):
     result.assert_outcomes(skipped=1)
 
 
-def test_xfail_test_handling(pytester):
+def test_xfail_test_handling(pytester: Pytester):
     """Test that xfail tests are properly handled."""
     pytester.makepyfile(
         """
@@ -286,7 +288,7 @@ def test_xfail_test_handling(pytester):
     result.assert_outcomes(xfailed=1)
 
 
-def test_parametrized_tests(pytester):
+def test_parametrized_tests(pytester: Pytester):
     """Test that parametrized tests work in subprocess."""
     pytester.makepyfile(
         """
@@ -303,7 +305,7 @@ def test_parametrized_tests(pytester):
     result.assert_outcomes(passed=3)
 
 
-def test_junit_xml_output(pytester):
+def test_junit_xml_output(pytester: Pytester):
     """Test that JUnit XML output works with subprocess tests."""
     pytester.makepyfile(
         """
@@ -332,7 +334,7 @@ def test_junit_xml_output(pytester):
     assert "test_fail" in content
 
 
-def test_capture_passed_config(pytester):
+def test_capture_passed_config(pytester: Pytester):
     """Test isolated_capture_passed configuration option."""
     # Note: Currently output capture for passed tests requires using sections
     # This test verifies the configuration is recognized without warnings
@@ -360,7 +362,7 @@ def test_capture_passed_config(pytester):
     assert "Unknown config option" not in result.stdout.str()
 
 
-def test_no_infinite_recursion(pytester):
+def test_no_infinite_recursion(pytester: Pytester):
     """Test that child processes don't spawn more subprocesses."""
     pytester.makepyfile(
         """
@@ -378,7 +380,7 @@ def test_no_infinite_recursion(pytester):
     result.assert_outcomes(passed=1)
 
 
-def test_test_duration_tracking(pytester):
+def test_test_duration_tracking(pytester: Pytester):
     """Test that test duration is tracked properly."""
     pytester.makepyfile(
         """
@@ -398,7 +400,7 @@ def test_test_duration_tracking(pytester):
     assert "test_with_duration" in result.stdout.str()
 
 
-def test_no_isolation_option(pytester):
+def test_no_isolation_option(pytester: Pytester):
     """Test that --no-isolation disables subprocess isolation."""
     pytester.makepyfile(
         """
@@ -425,7 +427,7 @@ def test_no_isolation_option(pytester):
     result.assert_outcomes(passed=2)
 
 
-def test_subprocess_with_nested_directory_structure(pytester):
+def test_subprocess_with_nested_directory_structure(pytester: Pytester):
     """Test that isolated tests work when running from a nested directory.
 
     This reproduces the issue where subprocess cannot find tests because
@@ -451,7 +453,7 @@ def test_in_nested_dir():
     result.assert_outcomes(passed=1)
 
 
-def test_subprocess_with_local_imports(pytester):
+def test_subprocess_with_local_imports(pytester: Pytester):
     """Test subprocess isolation when test imports from local helper module.
 
     This reproduces the issue where:
