@@ -232,12 +232,39 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         env[SUBPROC_REPORT_PATH] = report_path
 
         # Run pytest in subprocess with timeout, tracking execution time
-        cmd = [sys.executable, "-m", "pytest", *nodeids]
+        # Preserve rootdir and run subprocess from correct directory to ensure
+        # nodeids can be resolved
+        cmd = [sys.executable, "-m", "pytest"]
+
+        # Pass rootdir to subprocess to ensure it uses the same project root
+        # (config.rootpath is available in pytest 7.0+, which is our minimum version)
+        if config.rootpath:
+            cmd.extend(["--rootdir", str(config.rootpath)])
+
+        # Add the test nodeids
+        cmd.extend(nodeids)
+
         start_time = time.time()
+
+        # Determine the working directory for the subprocess
+        # Use rootpath if set, otherwise use invocation directory
+        # This ensures nodeids (which are relative to rootpath) can be resolved
+        subprocess_cwd = None
+        if config.rootpath:
+            subprocess_cwd = str(config.rootpath)
+        elif hasattr(config, "invocation_params") and hasattr(
+            config.invocation_params, "dir"
+        ):
+            subprocess_cwd = str(config.invocation_params.dir)
 
         try:
             proc = subprocess.run(
-                cmd, env=env, timeout=group_timeout, capture_output=False, check=False
+                cmd,
+                env=env,
+                timeout=group_timeout,
+                capture_output=False,
+                check=False,
+                cwd=subprocess_cwd,
             )
             returncode = proc.returncode
             timed_out = False
