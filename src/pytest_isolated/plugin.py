@@ -163,6 +163,93 @@ def pytest_collection_modifyitems(
     config._subprocess_normal_items = normal  # type: ignore[attr-defined]
 
 
+def _emit_report(
+    item: pytest.Item,
+    when: Literal["setup", "call", "teardown"],
+    outcome: Literal["passed", "failed", "skipped"],
+    longrepr: str = "",
+    duration: float = 0.0,
+    stdout: str = "",
+    stderr: str = "",
+    sections: list[tuple[str, str]] | None = None,
+    user_properties: list[tuple[str, Any]] | None = None,
+    wasxfail: bool = False,
+    capture_passed: bool = False,
+) -> None:
+    """Emit a test report for a specific test phase."""
+    call = pytest.CallInfo.from_call(lambda: None, when=when)
+    rep = pytest.TestReport.from_item_and_call(item, call)
+    rep.outcome = outcome
+    rep.duration = duration
+
+    if user_properties:
+        rep.user_properties = user_properties
+
+    if wasxfail:
+        rep.wasxfail = "reason: xfail"
+
+    # For skipped tests, longrepr needs to be a tuple (path, lineno, reason)
+    if outcome == "skipped" and longrepr:
+        # Parse longrepr or create simple tuple
+        lineno = item.location[1] if item.location[1] is not None else -1
+        rep.longrepr = (str(item.fspath), lineno, longrepr)  # type: ignore[assignment]
+    elif outcome == "failed" and longrepr:
+        rep.longrepr = longrepr
+
+    # Add captured output as sections (capstdout/capstderr are read-only)
+    if outcome == "failed" or (outcome == "passed" and capture_passed):
+        all_sections = list(sections) if sections else []
+        if stdout:
+            all_sections.append(("Captured stdout call", stdout))
+        if stderr:
+            all_sections.append(("Captured stderr call", stderr))
+        if all_sections:
+            rep.sections = all_sections
+
+    item.ihook.pytest_runtest_logreport(report=rep)
+
+
+def _emit_failure_for_items(
+    items: list[pytest.Item],
+    error_message: str,
+    session: pytest.Session,
+    capture_passed: bool = False,
+) -> None:
+    """Emit synthetic failure reports when subprocess execution fails.
+
+    When a subprocess crashes, times out, or fails during collection, we emit
+    synthetic test phase reports to mark affected tests as failed. We report
+    setup="passed" and teardown="passed" (even though these phases never ran)
+    to ensure pytest categorizes the test as FAILED rather than ERROR. The actual
+    failure is reported in the call phase with the error message.
+
+    For xfail tests, call is reported as skipped with wasxfail=True to maintain
+    proper xfail semantics.
+    """
+    for it in items:
+        xfail_marker = it.get_closest_marker("xfail")
+        _emit_report(it, "setup", "passed", capture_passed=capture_passed)
+        if xfail_marker:
+            _emit_report(
+                it,
+                "call",
+                "skipped",
+                longrepr=error_message,
+                wasxfail=True,
+                capture_passed=capture_passed,
+            )
+        else:
+            _emit_report(
+                it,
+                "call",
+                "failed",
+                longrepr=error_message,
+                capture_passed=capture_passed,
+            )
+            session.testsfailed += 1
+        _emit_report(it, "teardown", "passed", capture_passed=capture_passed)
+
+
 def pytest_runtestloop(session: pytest.Session) -> int | None:
     """Execute isolated test groups in subprocesses and remaining tests in-process.
 
@@ -190,70 +277,6 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
 
     # Get capture configuration
     capture_passed = config.getini("isolated_capture_passed")
-
-    def emit_failure_for_items(
-        items: list[pytest.Item],
-        error_message: str,
-    ) -> None:
-        """Emit test failure reports for all items in a group.
-
-        Handles xfail markers: tests marked xfail are reported as skipped with
-        wasxfail=True, others are reported as failed.
-        """
-        for it in items:
-            xfail_marker = it.get_closest_marker("xfail")
-            emit_report(it, "setup", "passed")
-            if xfail_marker:
-                emit_report(
-                    it, "call", "skipped", longrepr=error_message, wasxfail=True
-                )
-            else:
-                emit_report(it, "call", "failed", longrepr=error_message)
-                session.testsfailed += 1
-            emit_report(it, "teardown", "passed")
-
-    def emit_report(
-        item: pytest.Item,
-        when: Literal["setup", "call", "teardown"],
-        outcome: Literal["passed", "failed", "skipped"],
-        longrepr: str = "",
-        duration: float = 0.0,
-        stdout: str = "",
-        stderr: str = "",
-        sections: list[tuple[str, str]] | None = None,
-        user_properties: list[tuple[str, Any]] | None = None,
-        wasxfail: bool = False,
-    ) -> None:
-        call = pytest.CallInfo.from_call(lambda: None, when=when)
-        rep = pytest.TestReport.from_item_and_call(item, call)
-        rep.outcome = outcome
-        rep.duration = duration
-
-        if user_properties:
-            rep.user_properties = user_properties
-
-        if wasxfail:
-            rep.wasxfail = "reason: xfail"
-
-        # For skipped tests, longrepr needs to be a tuple (path, lineno, reason)
-        if outcome == "skipped" and longrepr:
-            # Parse longrepr or create simple tuple
-            lineno = item.location[1] if item.location[1] is not None else -1
-            rep.longrepr = (str(item.fspath), lineno, longrepr)  # type: ignore[assignment]
-        elif outcome == "failed" and longrepr:
-            rep.longrepr = longrepr
-
-        # Add captured output as sections (capstdout/capstderr are read-only)
-        if outcome == "failed" or (outcome == "passed" and capture_passed):
-            all_sections = list(sections) if sections else []
-            if stdout:
-                all_sections.append(("Captured stdout call", stdout))
-            if stderr:
-                all_sections.append(("Captured stderr call", stderr))
-            if all_sections:
-                rep.sections = all_sections
-
-        item.ihook.pytest_runtest_logreport(report=rep)
 
     # Run groups
     for group_name, group_items in groups.items():
@@ -368,7 +391,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                     f"Subprocess crashed with signal {-returncode} "
                     f"(expected for xfail test)"
                 )
-                emit_failure_for_items(group_items, msg)
+                _emit_failure_for_items(group_items, msg, session, capture_passed)
                 continue
 
         # Handle timeout
@@ -379,7 +402,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                 f"Increase timeout with --isolated-timeout, isolated_timeout ini, "
                 f"or @pytest.mark.isolated(timeout=N)."
             )
-            emit_failure_for_items(group_items, msg)
+            _emit_failure_for_items(group_items, msg, session, capture_passed)
             continue
 
         # Handle crash during collection (no results produced)
@@ -389,7 +412,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                 f"and produced no per-test report. The subprocess may have "
                 f"crashed during collection."
             )
-            emit_failure_for_items(group_items, msg)
+            _emit_failure_for_items(group_items, msg, session, capture_passed)
             continue
 
         # Emit per-test results into parent (all phases)
@@ -403,11 +426,11 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                     if when == "call" and not node_results:
                         # Test completely missing from subprocess results
                         msg = f"Missing result from subprocess for {it.nodeid}"
-                        emit_failure_for_items([it], msg)
+                        _emit_failure_for_items([it], msg, session, capture_passed)
                     continue
 
                 rec = node_results[when]
-                emit_report(
+                _emit_report(
                     it,
                     when=when,  # type: ignore[arg-type]
                     outcome=rec["outcome"],
@@ -415,6 +438,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                     duration=rec.get("duration", 0.0),
                     stdout=rec.get("stdout", ""),
                     stderr=rec.get("stderr", ""),
+                    capture_passed=capture_passed,
                     sections=rec.get("sections"),
                     user_properties=rec.get("user_properties"),
                     wasxfail=rec.get("wasxfail", False),
