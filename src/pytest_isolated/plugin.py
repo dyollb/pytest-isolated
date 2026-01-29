@@ -30,6 +30,8 @@ _FORWARD_FLAGS: Final = {
     "--showlocals",
     "--strict-markers",
     "--strict-config",
+    "-x",  # exit on first failure
+    "--exitfirst",
 }
 
 # Options that should be forwarded to subprocess (options with values)
@@ -350,7 +352,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                 cmd,
                 env=env,
                 timeout=group_timeout,
-                capture_output=False,
+                capture_output=True,
                 check=False,
                 cwd=subprocess_cwd,
             )
@@ -446,6 +448,14 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
 
                 if when == "call" and rec["outcome"] == "failed":
                     session.testsfailed += 1
+
+        # Check if we should exit early due to maxfail/exitfirst
+        if (
+            session.testsfailed
+            and session.config.option.maxfail
+            and session.testsfailed >= session.config.option.maxfail
+        ):
+            return 1
 
     # Run normal tests in-process
     for idx, item in enumerate(normal_items):

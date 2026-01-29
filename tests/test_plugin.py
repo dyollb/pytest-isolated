@@ -517,3 +517,31 @@ def test_in_subdir_2():
     # This should work - the subprocess should only get the nodeids, not 'tests'
     result = pytester.runpytest("-v", "tests")
     result.assert_outcomes(passed=2)
+
+
+def test_exitfirst_option(pytester: Pytester):
+    """Test that -x/--exitfirst stops execution after first failure"""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated(group="a")
+        def test_fail_first():
+            assert False, "First failure"
+
+        @pytest.mark.isolated(group="b")
+        def test_should_not_run_1():
+            assert True
+
+        @pytest.mark.isolated(group="c")
+        def test_should_not_run_2():
+            assert True
+    """
+    )
+
+    result = pytester.runpytest("-v", "-x")
+    result.assert_outcomes(failed=1)
+    # Verify the other tests were not run
+    assert "test_should_not_run_1" not in result.stdout.str()
+    assert "test_should_not_run_2" not in result.stdout.str()
+    assert "stopping after 1 failures" in result.stdout.str()
