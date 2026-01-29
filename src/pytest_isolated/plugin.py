@@ -9,7 +9,7 @@ import tempfile
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Final, Literal, TypedDict
+from typing import Any, Final, Literal, TypedDict, cast
 
 import pytest
 
@@ -32,8 +32,11 @@ _EXCLUDED_ARG_PREFIXES: Final = (
     "--maxfail=",
 )
 
-# Plugin-specific options that should not be forwarded
-_PLUGIN_OPTIONS: Final = ("--isolated-timeout", "--no-isolation")
+# Plugin-specific options that take values and should not be forwarded
+_PLUGIN_OPTIONS_WITH_VALUE: Final = ("--isolated-timeout",)
+
+# Plugin-specific flag options that should not be forwarded
+_PLUGIN_FLAGS: Final = ("--no-isolation",)
 
 
 class _TestRecord(TypedDict, total=False):
@@ -99,7 +102,7 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         return
 
     # Capture ALL phases (setup, call, teardown), not just call
-    rec = {
+    rec: _TestRecord = {
         "nodeid": report.nodeid,
         "when": report.when,  # setup, call, or teardown
         "outcome": report.outcome,  # passed/failed/skipped
@@ -160,7 +163,7 @@ def pytest_collection_modifyitems(
 
 
 def pytest_runtestloop(session: pytest.Session) -> int | None:
-    """Execute isolated test groups in subprocesses, then run remaining tests in-process.
+    """Execute isolated test groups in subprocesses and remaining tests in-process.
 
     Any subprocess timeouts are caught and reported as test failures; the
     subprocess.TimeoutExpired exception is not propagated to the caller.
@@ -266,8 +269,10 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                     continue
 
                 # Skip our own plugin options
-                if arg in _PLUGIN_OPTIONS:
+                if arg in _PLUGIN_OPTIONS_WITH_VALUE:
                     skip_next = True
+                    continue
+                if arg in _PLUGIN_FLAGS:
                     continue
 
                 # Skip output/reporting options that would conflict
@@ -323,7 +328,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         execution_time = time.time() - start_time
 
         # Gather results from JSONL file
-        results: dict[str, dict[str, Any]] = {}
+        results: dict[str, dict[str, _TestRecord]] = {}
         report_file = Path(report_path)
         if report_file.exists():
             with report_file.open(encoding="utf-8") as f:
@@ -331,7 +336,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                     file_line = line.strip()
                     if not file_line:
                         continue
-                    rec = json.loads(file_line)
+                    rec = cast(_TestRecord, json.loads(file_line))
                     nodeid = rec["nodeid"]
                     when = rec["when"]
 
@@ -370,7 +375,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
             node_results = results.get(it.nodeid, {})
 
             # Emit setup, call, teardown in order
-            for when in ["setup", "call", "teardown"]:
+            for when in ["setup", "call", "teardown"]:  # type: ignore[assignment]
                 if when not in node_results:
                     # If missing a phase, synthesize a passing one
                     if when == "call" and not node_results:
