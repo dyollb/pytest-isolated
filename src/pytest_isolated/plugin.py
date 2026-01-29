@@ -38,6 +38,26 @@ _PLUGIN_OPTIONS_WITH_VALUE: Final = ("--isolated-timeout",)
 # Plugin-specific flag options that should not be forwarded
 _PLUGIN_FLAGS: Final = ("--no-isolation",)
 
+# Options that should be forwarded to subprocess (flags without values)
+_FORWARD_FLAGS: Final = {
+    "-v",
+    "--verbose",
+    "-q",
+    "--quiet",
+    "-s",  # disable output capturing
+    "-l",
+    "--showlocals",
+    "--strict-markers",
+    "--strict-config",
+}
+
+# Options that should be forwarded to subprocess (options with values)
+_FORWARD_OPTIONS_WITH_VALUE: Final = {
+    "--tb",  # traceback style
+    "-r",  # show extra test summary info
+    "--capture",  # capture method (fd/sys/no/tee-sys)
+}
+
 
 class _TestRecord(TypedDict, total=False):
     """Structure for test phase results from subprocess."""
@@ -190,6 +210,27 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
     # Get capture configuration
     capture_passed = config.getini("isolated_capture_passed")
 
+    def emit_failure_for_items(
+        items: list[pytest.Item],
+        error_message: str,
+    ) -> None:
+        """Emit test failure reports for all items in a group.
+
+        Handles xfail markers: tests marked xfail are reported as skipped with
+        wasxfail=True, others are reported as failed.
+        """
+        for it in items:
+            xfail_marker = it.get_closest_marker("xfail")
+            emit_report(it, "setup", "passed")
+            if xfail_marker:
+                emit_report(
+                    it, "call", "skipped", longrepr=error_message, wasxfail=True
+                )
+            else:
+                emit_report(it, "call", "failed", longrepr=error_message)
+                session.testsfailed += 1
+            emit_report(it, "teardown", "passed")
+
     def emit_report(
         item: pytest.Item,
         when: Literal["setup", "call", "teardown"],
@@ -250,17 +291,12 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         env[SUBPROC_ENV] = "1"
         env[SUBPROC_REPORT_PATH] = report_path
 
-        # Run pytest in subprocess with timeout, tracking execution time
-        # Preserve rootdir and run subprocess from correct directory to ensure
-        # nodeids can be resolved
-        cmd = [sys.executable, "-m", "pytest"]
-
         # Forward relevant pytest options to subprocess for consistency
-        # We filter out options that would interfere with subprocess execution
+        # Only forward specific options that affect test execution behavior
+        forwarded_args = []
         if hasattr(config, "invocation_params") and hasattr(
             config.invocation_params, "args"
         ):
-            forwarded_args = []
             skip_next = False
 
             for arg in config.invocation_params.args:
@@ -268,29 +304,45 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                     skip_next = False
                     continue
 
-                # Skip our own plugin options
+                # Skip our plugin-specific options
                 if arg in _PLUGIN_OPTIONS_WITH_VALUE:
                     skip_next = True
                     continue
                 if arg in _PLUGIN_FLAGS:
                     continue
 
-                # Skip output/reporting options that would conflict
+                # Skip --rootdir (we set it explicitly later)
+                if arg == "--rootdir" or arg.startswith("--rootdir="):
+                    if arg == "--rootdir":
+                        skip_next = True
+                    continue
+
+                # Skip excluded reporting/output options
                 if any(arg.startswith(prefix) for prefix in _EXCLUDED_ARG_PREFIXES):
+                    if "=" not in arg:
+                        skip_next = True
                     continue
                 if arg in ("-x", "--exitfirst"):
                     continue
 
-                # Skip test file paths and nodeids - we provide our own
-                if not arg.startswith("-") and ("::" in arg or arg.endswith(".py")):
-                    continue
+                # Forward only explicitly allowed options
+                if arg in _FORWARD_FLAGS:
+                    forwarded_args.append(arg)
+                elif arg in _FORWARD_OPTIONS_WITH_VALUE:
+                    forwarded_args.append(arg)
+                    skip_next = True  # Next arg is the value
+                elif arg.startswith(
+                    tuple(f"{opt}=" for opt in _FORWARD_OPTIONS_WITH_VALUE)
+                ):
+                    forwarded_args.append(arg)
 
-                forwarded_args.append(arg)
+                # Skip everything else (positional args, test paths, unknown options)
 
-            cmd.extend(forwarded_args)
+        # Build pytest command for subprocess
+        cmd = [sys.executable, "-m", "pytest"]
+        cmd.extend(forwarded_args)
 
         # Pass rootdir to subprocess to ensure it uses the same project root
-        # (config.rootpath is available in pytest 7.0+, which is our minimum version)
         if config.rootpath:
             cmd.extend(["--rootdir", str(config.rootpath)])
 
@@ -346,7 +398,20 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
             with contextlib.suppress(OSError):
                 report_file.unlink()
 
-        # Handle timeout or crash
+        # For crashes (negative returncode), check if we should treat as xfail
+        if returncode < 0 and results:
+            # Check if all tests in this group are marked xfail
+            all_xfail = all(it.get_closest_marker("xfail") for it in group_items)
+            if all_xfail:
+                # Override any results from subprocess - crash is the expected outcome
+                msg = (
+                    f"Subprocess crashed with signal {-returncode} "
+                    f"(expected for xfail test)"
+                )
+                emit_failure_for_items(group_items, msg)
+                continue
+
+        # Handle timeout
         if timed_out:
             msg = (
                 f"Subprocess group={group_name!r} timed out after {group_timeout} "
@@ -354,20 +419,17 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                 f"Increase timeout with --isolated-timeout, isolated_timeout ini, "
                 f"or @pytest.mark.isolated(timeout=N)."
             )
-            for it in group_items:
-                emit_report(it, "call", "failed", longrepr=msg)
-                session.testsfailed += 1
+            emit_failure_for_items(group_items, msg)
             continue
 
+        # Handle crash during collection (no results produced)
         if not results:
             msg = (
                 f"Subprocess group={group_name!r} exited with code {returncode} "
                 f"and produced no per-test report. The subprocess may have "
                 f"crashed during collection."
             )
-            for it in group_items:
-                emit_report(it, "call", "failed", longrepr=msg)
-                session.testsfailed += 1
+            emit_failure_for_items(group_items, msg)
             continue
 
         # Emit per-test results into parent (all phases)
@@ -379,14 +441,9 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                 if when not in node_results:
                     # If missing a phase, synthesize a passing one
                     if when == "call" and not node_results:
-                        # Test completely missing - mark as failed
-                        emit_report(
-                            it,
-                            "call",
-                            "failed",
-                            longrepr=f"Missing result from subprocess for {it.nodeid}",
-                        )
-                        session.testsfailed += 1
+                        # Test completely missing from subprocess results
+                        msg = f"Missing result from subprocess for {it.nodeid}"
+                        emit_failure_for_items([it], msg)
                     continue
 
                 rec = node_results[when]

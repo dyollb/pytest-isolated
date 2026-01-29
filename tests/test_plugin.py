@@ -487,3 +487,33 @@ def test_using_helper():
     result = pytester.runpytest("-v", "--rootdir", "tests", "tests/test_with_import.py")
     # This should fail without the fix because the subprocess won't pass --rootdir
     result.assert_outcomes(passed=1)
+
+
+def test_subprocess_with_directory_argument(pytester: Pytester):
+    """Test that directory arguments don't cause subprocess collection errors.
+
+    When user runs 'pytest tests', the word 'tests' should not be forwarded to the
+    subprocess because:
+    1. The subprocess is given explicit nodeids to run
+    2. Passing 'tests' again causes pytest to try collecting twice
+    3. This can lead to 'file or directory not found' or other collection errors
+    """
+    # Create a tests subdirectory with isolated tests
+    tests_dir = pytester.mkdir("tests")
+    test_file = tests_dir / "test_isolated.py"
+    test_file.write_text("""
+import pytest
+
+@pytest.mark.isolated(group="1")
+def test_in_subdir_1():
+    assert True
+
+@pytest.mark.isolated(group="2")
+def test_in_subdir_2():
+    assert True
+""")
+
+    # Run pytest with directory argument 'tests'
+    # This should work - the subprocess should only get the nodeids, not 'tests'
+    result = pytester.runpytest("-v", "tests")
+    result.assert_outcomes(passed=2)
