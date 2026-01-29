@@ -9,15 +9,31 @@ import tempfile
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
 # Guard to prevent infinite recursion (parent spawns child; child must not spawn again)
-SUBPROC_ENV = "PYTEST_RUNNING_IN_SUBPROCESS"
+SUBPROC_ENV: Final = "PYTEST_RUNNING_IN_SUBPROCESS"
 
 # Parent tells child where to write JSONL records per test call
-SUBPROC_REPORT_PATH = "PYTEST_SUBPROCESS_REPORT_PATH"
+SUBPROC_REPORT_PATH: Final = "PYTEST_SUBPROCESS_REPORT_PATH"
+
+# Arguments to exclude when forwarding options to subprocess
+_EXCLUDED_ARG_PREFIXES: Final = (
+    "--junitxml=",
+    "--html=",
+    "--result-log=",
+    "--collect-only",
+    "--setup-only",
+    "--setup-plan",
+    "-x",
+    "--exitfirst",
+    "--maxfail=",
+)
+
+# Plugin-specific options that should not be forwarded
+_PLUGIN_OPTIONS: Final = ("--isolated-timeout", "--no-isolation")
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -235,6 +251,38 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         # Preserve rootdir and run subprocess from correct directory to ensure
         # nodeids can be resolved
         cmd = [sys.executable, "-m", "pytest"]
+
+        # Forward relevant pytest options to subprocess for consistency
+        # We filter out options that would interfere with subprocess execution
+        if hasattr(config, "invocation_params") and hasattr(
+            config.invocation_params, "args"
+        ):
+            forwarded_args = []
+            skip_next = False
+
+            for arg in config.invocation_params.args:
+                if skip_next:
+                    skip_next = False
+                    continue
+
+                # Skip our own plugin options
+                if arg in _PLUGIN_OPTIONS:
+                    skip_next = True
+                    continue
+
+                # Skip output/reporting options that would conflict
+                if any(arg.startswith(prefix) for prefix in _EXCLUDED_ARG_PREFIXES):
+                    continue
+                if arg in ("-x", "--exitfirst"):
+                    continue
+
+                # Skip test file paths and nodeids - we provide our own
+                if not arg.startswith("-") and ("::" in arg or arg.endswith(".py")):
+                    continue
+
+                forwarded_args.append(arg)
+
+            cmd.extend(forwarded_args)
 
         # Pass rootdir to subprocess to ensure it uses the same project root
         # (config.rootpath is available in pytest 7.0+, which is our minimum version)
