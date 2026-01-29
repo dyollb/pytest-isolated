@@ -93,7 +93,7 @@ def pytest_configure(config: pytest.Config) -> None:
 # CHILD MODE: record results + captured output per test phase
 # ----------------------------
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """Raises FileNotFoundError if report path doesn't exist."""
+    """Write test phase results to a JSONL file when running in subprocess mode."""
     path = os.environ.get(SUBPROC_REPORT_PATH)
     if not path:
         return
@@ -160,7 +160,11 @@ def pytest_collection_modifyitems(
 
 
 def pytest_runtestloop(session: pytest.Session) -> int | None:
-    """Raises subprocess.TimeoutExpired if subprocess times out."""
+    """Execute isolated test groups in subprocesses, then run remaining tests in-process.
+
+    Any subprocess timeouts are caught and reported as test failures; the
+    subprocess.TimeoutExpired exception is not propagated to the caller.
+    """
     if os.environ.get(SUBPROC_ENV) == "1":
         return None  # child runs the normal loop
 
