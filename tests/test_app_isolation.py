@@ -47,17 +47,19 @@ def test_failing():
 
 @pytest.mark.isolated
 @pytest.mark.xfail(
-    reason="This test is expected to segfault. "
+    reason="This test is expected to crash. "
     "If properly isolated, then it will be a FAILURE otherwise it will be an ERROR."
 )
-def test_segfault_to_check_isolation():
+def test_crash_to_check_isolation():
     """This test is just to check the isolation of tests.
 
     - With isolation
-        - this test fails with `Fatal Python error: Segmentation fault`
+        - this test fails with crash message
+            - SIGABRT on Unix
+            - abnormal termination on Windows)
     - Without it:
         - pytest crashes
     """
-    import ctypes  # noqa: PLC0415
+    import os  # noqa: PLC0415
 
-    ctypes.string_at(0)
+    os.abort()

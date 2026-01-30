@@ -153,40 +153,45 @@ def test_subprocess_crash_handling(pytester: Pytester):
     assert "This should be reported as failed" in result.stdout.str()
 
 
-def test_segfault_during_test_execution(pytester: Pytester):
-    """Test that segfault during test execution is reported as failure.
+def test_subprocess_crash_during_test_execution(pytester: Pytester):
+    """Test that subprocess crash during test execution is reported as failure.
 
-    When a test causes a segfault (or other signal-based crash), the subprocess
+    When a test causes a process crash (via os.abort()), the subprocess
     dies mid-execution. The plugin should detect this and report the test as
-    failed with an informative error message including the signal number.
+    failed with an informative error message.
+
+    os.abort() works cross-platform: on Unix it sends SIGABRT (signal 6),
+    on Windows it terminates the process abnormally.
     """
     pytester.makepyfile(
         """
+        import os
         import pytest
 
         @pytest.mark.isolated
-        def test_segfault():
-            import ctypes
-            # Trigger a segfault by reading from null pointer
-            ctypes.string_at(0)
+        def test_crash():
+            # Trigger an abnormal process termination
+            os.abort()
     """
     )
 
     result = pytester.runpytest("-v")
     result.assert_outcomes(failed=1)
-    # Should see crash information with signal number (SIGSEGV = 11)
+    # Should see crash information
     stdout = result.stdout.str()
-    assert "crashed with signal" in stdout or "Segmentation fault" in stdout
+    # On Unix: "crashed with signal 6" (SIGABRT), on Windows: different message
+    assert "crashed with signal" in stdout or "exited with code" in stdout
 
 
-def test_segfault_with_multiple_tests_in_group(pytester: Pytester):
-    """Test that when one test segfaults, remaining tests in group are reported.
+def test_subprocess_crash_with_multiple_tests_in_group(pytester: Pytester):
+    """Test that when one test crashes, remaining tests in group are reported.
 
     If a group contains multiple tests and one crashes, the remaining tests
     should be marked as 'not run' rather than silently disappearing.
     """
     pytester.makepyfile(
         """
+        import os
         import pytest
 
         @pytest.mark.isolated(group="crashgroup")
@@ -194,9 +199,8 @@ def test_segfault_with_multiple_tests_in_group(pytester: Pytester):
             assert True
 
         @pytest.mark.isolated(group="crashgroup")
-        def test_segfault():
-            import ctypes
-            ctypes.string_at(0)
+        def test_crash():
+            os.abort()
 
         @pytest.mark.isolated(group="crashgroup")
         def test_after_crash():
@@ -206,11 +210,11 @@ def test_segfault_with_multiple_tests_in_group(pytester: Pytester):
     )
 
     result = pytester.runpytest("-v")
-    # test_before_crash passes, test_segfault fails, test_after_crash fails (not run)
+    # test_before_crash passes, test_crash fails, test_after_crash fails (not run)
     result.assert_outcomes(passed=1, failed=2)
     stdout = result.stdout.str()
-    assert "test_segfault" in stdout
-    assert "crashed with signal" in stdout or "Segmentation fault" in stdout
+    assert "test_crash" in stdout
+    assert "crashed with signal" in stdout or "exited with code" in stdout
 
 
 def test_timeout_handling(pytester: Pytester):
