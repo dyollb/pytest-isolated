@@ -15,6 +15,10 @@ A cross-platform pytest plugin that runs marked tests in isolated subprocesses w
 - Configurable timeouts to prevent hanging subprocesses
 - Cross-platform: Linux, macOS, Windows
 
+## Cheatsheet for pytest-forked users
+
+This plugin is inspired by [pytest-forked](https://github.com/pytest-dev/pytest-forked). See [pytest-forked migration guide](docs/pytest-forked-migration.md) for a quick reference comparing features.
+
 ## Installation
 
 ```bash
