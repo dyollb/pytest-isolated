@@ -19,24 +19,75 @@ SUBPROC_ENV: Final = "PYTEST_RUNNING_IN_SUBPROCESS"
 # Parent tells child where to write JSONL records per test call
 SUBPROC_REPORT_PATH: Final = "PYTEST_SUBPROCESS_REPORT_PATH"
 
-# Arguments to exclude when forwarding options to subprocess
-_EXCLUDED_ARG_PREFIXES: Final = (
-    "--junitxml=",
-    "--html=",
-    "--result-log=",
-    "--collect-only",
-    "--setup-only",
-    "--setup-plan",
-    "-x",
+# Options that should be forwarded to subprocess (flags without values)
+_FORWARD_FLAGS: Final = {
+    "-v",
+    "--verbose",
+    "-q",
+    "--quiet",
+    "-s",  # disable output capturing
+    "-l",
+    "--showlocals",
+    "--strict-markers",
+    "--strict-config",
+    "-x",  # exit on first failure
     "--exitfirst",
-    "--maxfail=",
-)
+}
 
-# Plugin-specific options that take values and should not be forwarded
-_PLUGIN_OPTIONS_WITH_VALUE: Final = ("--isolated-timeout",)
+# Options that should be forwarded to subprocess (options with values)
+_FORWARD_OPTIONS_WITH_VALUE: Final = {
+    "--tb",  # traceback style
+    "-r",  # show extra test summary info
+    "--capture",  # capture method (fd/sys/no/tee-sys)
+}
 
-# Plugin-specific flag options that should not be forwarded
-_PLUGIN_FLAGS: Final = ("--no-isolation",)
+
+def _has_isolated_marker(obj: Any) -> bool:
+    """Check if an object has the isolated marker in its pytestmark."""
+    markers = getattr(obj, "pytestmark", [])
+    if not isinstance(markers, list):
+        markers = [markers]
+    return any(getattr(m, "name", None) == "isolated" for m in markers)
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform crash detection helpers
+# ---------------------------------------------------------------------------
+
+
+def _format_crash_reason(returncode: int) -> str:
+    """Format a human-readable crash reason from a return code.
+
+    On Unix, negative return codes indicate signal numbers.
+    On Windows, we report the exit code directly.
+    """
+    if returncode < 0:
+        # Unix: negative return code is -signal_number
+        return f"crashed with signal {-returncode}"
+    # Windows or other: positive exit code
+    return f"crashed with exit code {returncode}"
+
+
+def _format_crash_message(
+    returncode: int,
+    context: str,
+    stderr_text: str = "",
+) -> str:
+    """Build a complete crash error message with optional stderr output.
+
+    Args:
+        returncode: The subprocess return code.
+        context: Description of when the crash occurred (e.g., "during test execution").
+        stderr_text: Optional captured stderr from the subprocess.
+
+    Returns:
+        A formatted error message suitable for test failure reports.
+    """
+    reason = _format_crash_reason(returncode)
+    msg = f"Subprocess {reason} {context}."
+    if stderr_text:
+        msg += f"\n\nSubprocess stderr:\n{stderr_text}"
+    return msg
 
 
 class _TestRecord(TypedDict, total=False):
@@ -57,6 +108,12 @@ class _TestRecord(TypedDict, total=False):
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("isolated")
+    group.addoption(
+        "--isolated",
+        action="store_true",
+        default=False,
+        help="Run all tests in isolated subprocesses",
+    )
     group.addoption(
         "--isolated-timeout",
         type=int,
@@ -135,31 +192,154 @@ def pytest_collection_modifyitems(
         config._subprocess_normal_items = items  # type: ignore[attr-defined]
         return
 
+    # If --isolated is set, run all tests in isolation
+    run_all_isolated = config.getoption("isolated", False)
+
     groups: OrderedDict[str, list[pytest.Item]] = OrderedDict()
     group_timeouts: dict[str, int | None] = {}  # Track timeout per group
     normal: list[pytest.Item] = []
 
     for item in items:
         m = item.get_closest_marker("isolated")
-        if not m:
+
+        # Skip non-isolated tests unless --isolated flag is set
+        if not m and not run_all_isolated:
             normal.append(item)
             continue
 
-        group = m.kwargs.get("group")
-        # Default grouping to module path (so you don't accidentally group everything)
+        # Get group from marker (positional arg, keyword arg, or default)
+        group = None
+        if m:
+            # Support @pytest.mark.isolated("groupname") - positional arg
+            if m.args:
+                group = m.args[0]
+            # Support @pytest.mark.isolated(group="groupname") - keyword arg
+            elif "group" in m.kwargs:
+                group = m.kwargs["group"]
+
+        # Default grouping logic
         if group is None:
-            group = item.nodeid.split("::")[0]
+            # If --isolated flag is used (no explicit marker), use unique nodeid
+            if not m:
+                group = item.nodeid
+            # Check if marker was applied to a class or module
+            elif isinstance(item, pytest.Function):
+                if item.cls is not None and _has_isolated_marker(item.cls):
+                    # Group by class name (module::class)
+                    parts = item.nodeid.split("::")
+                    group = "::".join(parts[:2]) if len(parts) >= 3 else item.nodeid
+                elif _has_isolated_marker(item.module):
+                    # Group by module name (first part of nodeid)
+                    parts = item.nodeid.split("::")
+                    group = parts[0]
+                else:
+                    # Explicit marker on function uses unique nodeid
+                    group = item.nodeid
+            else:
+                # Non-Function items use unique nodeid
+                group = item.nodeid
 
         # Store group-specific timeout (first marker wins)
         group_key = str(group)
         if group_key not in group_timeouts:
-            group_timeouts[group_key] = m.kwargs.get("timeout")
+            timeout = m.kwargs.get("timeout") if m else None
+            group_timeouts[group_key] = timeout
 
         groups.setdefault(group_key, []).append(item)
 
     config._subprocess_groups = groups  # type: ignore[attr-defined]
     config._subprocess_group_timeouts = group_timeouts  # type: ignore[attr-defined]
     config._subprocess_normal_items = normal  # type: ignore[attr-defined]
+
+
+def _emit_report(
+    item: pytest.Item,
+    *,
+    when: Literal["setup", "call", "teardown"],
+    outcome: Literal["passed", "failed", "skipped"],
+    longrepr: str = "",
+    duration: float = 0.0,
+    stdout: str = "",
+    stderr: str = "",
+    sections: list[tuple[str, str]] | None = None,
+    user_properties: list[tuple[str, Any]] | None = None,
+    wasxfail: bool = False,
+    capture_passed: bool = False,
+) -> None:
+    """Emit a test report for a specific test phase."""
+    call = pytest.CallInfo.from_call(lambda: None, when=when)
+    rep = pytest.TestReport.from_item_and_call(item, call)
+    rep.outcome = outcome
+    rep.duration = duration
+
+    if user_properties:
+        rep.user_properties = user_properties
+
+    if wasxfail:
+        rep.wasxfail = "reason: xfail"
+
+    # For skipped tests, longrepr needs to be a tuple (path, lineno, reason)
+    if outcome == "skipped" and longrepr:
+        # Parse longrepr or create simple tuple
+        lineno = item.location[1] if item.location[1] is not None else -1
+        rep.longrepr = (str(item.fspath), lineno, longrepr)  # type: ignore[assignment]
+    elif outcome == "failed" and longrepr:
+        rep.longrepr = longrepr
+
+    # Add captured output as sections (capstdout/capstderr are read-only)
+    if outcome == "failed" or (outcome == "passed" and capture_passed):
+        all_sections = list(sections) if sections else []
+        if stdout:
+            all_sections.append(("Captured stdout call", stdout))
+        if stderr:
+            all_sections.append(("Captured stderr call", stderr))
+        if all_sections:
+            rep.sections = all_sections
+
+    item.ihook.pytest_runtest_logreport(report=rep)
+
+
+def _emit_failure_for_items(
+    items: list[pytest.Item],
+    error_message: str,
+    session: pytest.Session,
+    capture_passed: bool = False,
+) -> None:
+    """Emit synthetic failure reports when subprocess execution fails.
+
+    When a subprocess crashes, times out, or fails during collection, we emit
+    synthetic test phase reports to mark affected tests as failed. We report
+    setup="passed" and teardown="passed" (even though these phases never ran)
+    to ensure pytest categorizes the test as FAILED rather than ERROR. The actual
+    failure is reported in the call phase with the error message.
+
+    For xfail tests, call is reported as skipped with wasxfail=True to maintain
+    proper xfail semantics.
+    """
+    for it in items:
+        xfail_marker = it.get_closest_marker("xfail")
+        _emit_report(it, when="setup", outcome="passed", capture_passed=capture_passed)
+        if xfail_marker:
+            _emit_report(
+                it,
+                when="call",
+                outcome="skipped",
+                longrepr=error_message,
+                wasxfail=True,
+                capture_passed=capture_passed,
+            )
+        else:
+            _emit_report(
+                it,
+                when="call",
+                outcome="failed",
+                longrepr=error_message,
+                capture_passed=capture_passed,
+            )
+            session.testsfailed += 1
+        _emit_report(
+            it, when="teardown", outcome="passed", capture_passed=capture_passed
+        )
 
 
 def pytest_runtestloop(session: pytest.Session) -> int | None:
@@ -190,49 +370,6 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
     # Get capture configuration
     capture_passed = config.getini("isolated_capture_passed")
 
-    def emit_report(
-        item: pytest.Item,
-        when: Literal["setup", "call", "teardown"],
-        outcome: Literal["passed", "failed", "skipped"],
-        longrepr: str = "",
-        duration: float = 0.0,
-        stdout: str = "",
-        stderr: str = "",
-        sections: list[tuple[str, str]] | None = None,
-        user_properties: list[tuple[str, Any]] | None = None,
-        wasxfail: bool = False,
-    ) -> None:
-        call = pytest.CallInfo.from_call(lambda: None, when=when)
-        rep = pytest.TestReport.from_item_and_call(item, call)
-        rep.outcome = outcome
-        rep.duration = duration
-
-        if user_properties:
-            rep.user_properties = user_properties
-
-        if wasxfail:
-            rep.wasxfail = "reason: xfail"
-
-        # For skipped tests, longrepr needs to be a tuple (path, lineno, reason)
-        if outcome == "skipped" and longrepr:
-            # Parse longrepr or create simple tuple
-            lineno = item.location[1] if item.location[1] is not None else -1
-            rep.longrepr = (str(item.fspath), lineno, longrepr)  # type: ignore[assignment]
-        elif outcome == "failed" and longrepr:
-            rep.longrepr = longrepr
-
-        # Add captured output as sections (capstdout/capstderr are read-only)
-        if outcome == "failed" or (outcome == "passed" and capture_passed):
-            all_sections = list(sections) if sections else []
-            if stdout:
-                all_sections.append(("Captured stdout call", stdout))
-            if stderr:
-                all_sections.append(("Captured stderr call", stderr))
-            if all_sections:
-                rep.sections = all_sections
-
-        item.ihook.pytest_runtest_logreport(report=rep)
-
     # Run groups
     for group_name, group_items in groups.items():
         nodeids = [it.nodeid for it in group_items]
@@ -250,17 +387,12 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         env[SUBPROC_ENV] = "1"
         env[SUBPROC_REPORT_PATH] = report_path
 
-        # Run pytest in subprocess with timeout, tracking execution time
-        # Preserve rootdir and run subprocess from correct directory to ensure
-        # nodeids can be resolved
-        cmd = [sys.executable, "-m", "pytest"]
-
         # Forward relevant pytest options to subprocess for consistency
-        # We filter out options that would interfere with subprocess execution
+        # Only forward specific options that affect test execution behavior
+        forwarded_args = []
         if hasattr(config, "invocation_params") and hasattr(
             config.invocation_params, "args"
         ):
-            forwarded_args = []
             skip_next = False
 
             for arg in config.invocation_params.args:
@@ -268,29 +400,24 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                     skip_next = False
                     continue
 
-                # Skip our own plugin options
-                if arg in _PLUGIN_OPTIONS_WITH_VALUE:
-                    skip_next = True
-                    continue
-                if arg in _PLUGIN_FLAGS:
-                    continue
+                # Forward only explicitly allowed options
+                if arg in _FORWARD_FLAGS:
+                    forwarded_args.append(arg)
+                elif arg in _FORWARD_OPTIONS_WITH_VALUE:
+                    forwarded_args.append(arg)
+                    skip_next = True  # Next arg is the value
+                elif arg.startswith(
+                    tuple(f"{opt}=" for opt in _FORWARD_OPTIONS_WITH_VALUE)
+                ):
+                    forwarded_args.append(arg)
 
-                # Skip output/reporting options that would conflict
-                if any(arg.startswith(prefix) for prefix in _EXCLUDED_ARG_PREFIXES):
-                    continue
-                if arg in ("-x", "--exitfirst"):
-                    continue
+                # Skip everything else (positional args, test paths, unknown options)
 
-                # Skip test file paths and nodeids - we provide our own
-                if not arg.startswith("-") and ("::" in arg or arg.endswith(".py")):
-                    continue
-
-                forwarded_args.append(arg)
-
-            cmd.extend(forwarded_args)
+        # Build pytest command for subprocess
+        cmd = [sys.executable, "-m", "pytest"]
+        cmd.extend(forwarded_args)
 
         # Pass rootdir to subprocess to ensure it uses the same project root
-        # (config.rootpath is available in pytest 7.0+, which is our minimum version)
         if config.rootpath:
             cmd.extend(["--rootdir", str(config.rootpath)])
 
@@ -310,19 +437,22 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         ):
             subprocess_cwd = str(config.invocation_params.dir)
 
+        proc_stderr = b""
         try:
             proc = subprocess.run(
                 cmd,
                 env=env,
                 timeout=group_timeout,
-                capture_output=False,
+                capture_output=True,
                 check=False,
                 cwd=subprocess_cwd,
             )
             returncode = proc.returncode
+            proc_stderr = proc.stderr or b""
             timed_out = False
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             returncode = -1
+            proc_stderr = exc.stderr or b""
             timed_out = True
 
         execution_time = time.time() - start_time
@@ -346,7 +476,20 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
             with contextlib.suppress(OSError):
                 report_file.unlink()
 
-        # Handle timeout or crash
+        # For crashes (negative returncode), check if we should treat as xfail
+        if returncode < 0 and results:
+            # Check if all tests in this group are marked xfail
+            all_xfail = all(it.get_closest_marker("xfail") for it in group_items)
+            if all_xfail:
+                # Override any results from subprocess - crash is the expected outcome
+                msg = (
+                    f"Subprocess crashed with signal {-returncode} "
+                    f"(expected for xfail test)"
+                )
+                _emit_failure_for_items(group_items, msg, session, capture_passed)
+                continue
+
+        # Handle timeout
         if timed_out:
             msg = (
                 f"Subprocess group={group_name!r} timed out after {group_timeout} "
@@ -354,50 +497,163 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                 f"Increase timeout with --isolated-timeout, isolated_timeout ini, "
                 f"or @pytest.mark.isolated(timeout=N)."
             )
-            for it in group_items:
-                emit_report(it, "call", "failed", longrepr=msg)
-                session.testsfailed += 1
+            _emit_failure_for_items(group_items, msg, session, capture_passed)
             continue
 
+        # Handle crash during collection (no results produced)
         if not results:
+            stderr_text = proc_stderr.decode("utf-8", errors="replace").strip()
             msg = (
                 f"Subprocess group={group_name!r} exited with code {returncode} "
                 f"and produced no per-test report. The subprocess may have "
                 f"crashed during collection."
             )
-            for it in group_items:
-                emit_report(it, "call", "failed", longrepr=msg)
-                session.testsfailed += 1
+            if stderr_text:
+                msg += f"\n\nSubprocess stderr:\n{stderr_text}"
+            _emit_failure_for_items(group_items, msg, session, capture_passed)
             continue
+
+        # Handle mid-test crash: detect tests with incomplete phases
+        # (e.g., setup recorded but call missing indicates crash during test)
+        crashed_items: list[pytest.Item] = []
+
+        for it in group_items:
+            node_results = results.get(it.nodeid, {})
+            # Test started (setup passed) but crashed before call completed.
+            # If setup was skipped or failed, no call phase is expected.
+            if node_results and "call" not in node_results:
+                setup_result = node_results.get("setup", {})
+                setup_outcome = setup_result.get("outcome", "")
+                if setup_outcome == "passed":
+                    crashed_items.append(it)
+
+        # If we detected crashed tests, also find tests that never ran
+        # (they come after the crashing test in the same group)
+        not_run_items: list[pytest.Item] = []
+        if crashed_items:
+            for it in group_items:
+                node_results = results.get(it.nodeid, {})
+                # Test never started (no results at all)
+                if not node_results:
+                    not_run_items.append(it)
+
+        if crashed_items or not_run_items:
+            stderr_text = proc_stderr.decode("utf-8", errors="replace").strip()
+
+            # Emit failures for crashed tests
+            if crashed_items:
+                crash_msg = _format_crash_message(
+                    returncode, "during test execution", stderr_text
+                )
+
+                for it in crashed_items:
+                    node_results = results.get(it.nodeid, {})
+                    # Emit setup phase if it was recorded
+                    if "setup" in node_results:
+                        rec = node_results["setup"]
+                        _emit_report(
+                            it,
+                            when="setup",
+                            outcome=rec["outcome"],
+                            longrepr=rec.get("longrepr", ""),
+                            duration=rec.get("duration", 0.0),
+                            capture_passed=capture_passed,
+                        )
+                    else:
+                        _emit_report(
+                            it,
+                            when="setup",
+                            outcome="passed",
+                            capture_passed=capture_passed,
+                        )
+
+                    # Emit call phase as failed with crash info
+                    xfail_marker = it.get_closest_marker("xfail")
+                    if xfail_marker:
+                        _emit_report(
+                            it,
+                            when="call",
+                            outcome="skipped",
+                            longrepr=crash_msg,
+                            wasxfail=True,
+                            capture_passed=capture_passed,
+                        )
+                    else:
+                        _emit_report(
+                            it,
+                            when="call",
+                            outcome="failed",
+                            longrepr=crash_msg,
+                            capture_passed=capture_passed,
+                        )
+                        session.testsfailed += 1
+
+                    _emit_report(
+                        it,
+                        when="teardown",
+                        outcome="passed",
+                        capture_passed=capture_passed,
+                    )
+                    # Remove from results so they're not processed again
+                    results.pop(it.nodeid, None)
+
+            # Emit failures for tests that never ran due to earlier crash
+            if not_run_items:
+                not_run_msg = _format_crash_message(
+                    returncode, "during earlier test execution", stderr_text
+                )
+                not_run_msg = f"Test did not run - {not_run_msg}"
+                _emit_failure_for_items(
+                    not_run_items, not_run_msg, session, capture_passed
+                )
+                for it in not_run_items:
+                    results.pop(it.nodeid, None)
 
         # Emit per-test results into parent (all phases)
         for it in group_items:
             node_results = results.get(it.nodeid, {})
 
+            # Skip tests that were already handled by crash detection above
+            if it.nodeid not in results:
+                continue
+
+            # Check if setup passed (to determine if missing call is expected)
+            setup_passed = (
+                "setup" in node_results and node_results["setup"]["outcome"] == "passed"
+            )
+
             # Emit setup, call, teardown in order
             for when in ["setup", "call", "teardown"]:  # type: ignore[assignment]
                 if when not in node_results:
-                    # If missing a phase, synthesize a passing one
-                    if when == "call" and not node_results:
-                        # Test completely missing - mark as failed
-                        emit_report(
+                    # If missing call phase AND setup passed, emit a failure
+                    # (crash detection above should handle most cases, but this
+                    # is a safety net for unexpected situations)
+                    # If setup failed, missing call is expected (pytest skips call)
+                    if when == "call" and setup_passed:
+                        msg = (
+                            "Missing 'call' phase result"
+                            f" from subprocess for {it.nodeid}"
+                        )
+                        _emit_report(
                             it,
-                            "call",
-                            "failed",
-                            longrepr=f"Missing result from subprocess for {it.nodeid}",
+                            when="call",
+                            outcome="failed",
+                            longrepr=msg,
+                            capture_passed=capture_passed,
                         )
                         session.testsfailed += 1
                     continue
 
                 rec = node_results[when]
-                emit_report(
+                _emit_report(
                     it,
                     when=when,  # type: ignore[arg-type]
-                    outcome=rec["outcome"],
+                    outcome=rec.get("outcome", "failed"),  # type: ignore[arg-type]
                     longrepr=rec.get("longrepr", ""),
                     duration=rec.get("duration", 0.0),
                     stdout=rec.get("stdout", ""),
                     stderr=rec.get("stderr", ""),
+                    capture_passed=capture_passed,
                     sections=rec.get("sections"),
                     user_properties=rec.get("user_properties"),
                     wasxfail=rec.get("wasxfail", False),
@@ -405,6 +661,14 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
 
                 if when == "call" and rec["outcome"] == "failed":
                     session.testsfailed += 1
+
+        # Check if we should exit early due to maxfail/exitfirst
+        if (
+            session.testsfailed
+            and session.config.option.maxfail
+            and session.testsfailed >= session.config.option.maxfail
+        ):
+            return 1
 
     # Run normal tests in-process
     for idx, item in enumerate(normal_items):

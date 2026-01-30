@@ -24,6 +24,11 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 
+[project.urls]
+Homepage = "https://github.com/dyollb/pytest-isolated"
+Repository = "https://github.com/dyollb/pytest-isolated"
+Issues = "https://github.com/dyollb/pytest-isolated/issues"
+
 [project.optional-dependencies]
 dev = [
     "pre-commit",

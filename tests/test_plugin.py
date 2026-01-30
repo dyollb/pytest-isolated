@@ -153,6 +153,70 @@ def test_subprocess_crash_handling(pytester: Pytester):
     assert "This should be reported as failed" in result.stdout.str()
 
 
+def test_subprocess_crash_during_test_execution(pytester: Pytester):
+    """Test that subprocess crash during test execution is reported as failure.
+
+    When a test causes a process crash (via os.abort()), the subprocess
+    dies mid-execution. The plugin should detect this and report the test as
+    failed with an informative error message.
+
+    os.abort() works cross-platform: on Unix it sends SIGABRT (signal 6),
+    on Windows it terminates the process abnormally with exit code 3.
+    """
+    pytester.makepyfile(
+        """
+        import os
+        import pytest
+
+        @pytest.mark.isolated
+        def test_crash():
+            # Trigger an abnormal process termination
+            os.abort()
+    """
+    )
+
+    result = pytester.runpytest("-v")
+    result.assert_outcomes(failed=1)
+    # Should see crash information
+    stdout = result.stdout.str()
+    # On Unix: "crashed with signal", on Windows: "crashed with exit code"
+    assert "crashed with signal" in stdout or "crashed with exit code" in stdout
+
+
+def test_subprocess_crash_with_multiple_tests_in_group(pytester: Pytester):
+    """Test that when one test crashes, remaining tests in group are reported.
+
+    If a group contains multiple tests and one crashes, the remaining tests
+    should be marked as 'not run' rather than silently disappearing.
+    """
+    pytester.makepyfile(
+        """
+        import os
+        import pytest
+
+        @pytest.mark.isolated(group="crashgroup")
+        def test_before_crash():
+            assert True
+
+        @pytest.mark.isolated(group="crashgroup")
+        def test_crash():
+            os.abort()
+
+        @pytest.mark.isolated(group="crashgroup")
+        def test_after_crash():
+            # This test should be reported as not run
+            assert True
+    """
+    )
+
+    result = pytester.runpytest("-v")
+    # test_before_crash passes, test_crash fails, test_after_crash fails (not run)
+    result.assert_outcomes(passed=1, failed=2)
+    stdout = result.stdout.str()
+    assert "test_crash" in stdout
+    assert "crashed with signal" in stdout or "crashed with exit code" in stdout
+
+
 def test_timeout_handling(pytester: Pytester):
     """Test that timeout is enforced and reported."""
     pytester.makepyfile(
@@ -221,7 +285,7 @@ def test_mixed_subprocess_and_normal(pytester: Pytester):
 
 
 def test_default_grouping_by_module(pytester: Pytester):
-    """Test that tests without explicit group are grouped by module."""
+    """Test that tests without explicit group each run in their own subprocess."""
     pytester.makepyfile(
         test_mod1="""
         import pytest
@@ -236,7 +300,7 @@ def test_default_grouping_by_module(pytester: Pytester):
         @pytest.mark.isolated
         def test_b():
             state.append(2)
-            assert len(state) == 2  # Same module, same subprocess
+            assert len(state) == 1  # Different subprocess, fresh state
     """,
         test_mod2="""
         import pytest
@@ -246,8 +310,36 @@ def test_default_grouping_by_module(pytester: Pytester):
         @pytest.mark.isolated
         def test_c():
             state.append(1)
-            assert len(state) == 1  # Different module, different subprocess
+            assert len(state) == 1  # Different subprocess, fresh state
     """,
+    )
+
+    result = pytester.runpytest("-v")
+    result.assert_outcomes(passed=3)
+
+
+def test_class_marker_grouping(pytester: Pytester):
+    """Test that class-level @pytest.mark.isolated groups all methods together."""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated
+        class TestDB:
+            shared = []
+
+            def test_a(self):
+                self.shared.append("a")
+                assert len(self.shared) == 1
+
+            def test_b(self):
+                self.shared.append("b")
+                assert len(self.shared) == 2  # Same subprocess, shared state
+
+            def test_c(self):
+                self.shared.append("c")
+                assert len(self.shared) == 3  # Same subprocess, shared state
+    """
     )
 
     result = pytester.runpytest("-v")
@@ -487,3 +579,135 @@ def test_using_helper():
     result = pytester.runpytest("-v", "--rootdir", "tests", "tests/test_with_import.py")
     # This should fail without the fix because the subprocess won't pass --rootdir
     result.assert_outcomes(passed=1)
+
+
+def test_subprocess_with_directory_argument(pytester: Pytester):
+    """Test that directory arguments don't cause subprocess collection errors.
+
+    When user runs 'pytest tests', the word 'tests' should not be forwarded to the
+    subprocess because:
+    1. The subprocess is given explicit nodeids to run
+    2. Passing 'tests' again causes pytest to try collecting twice
+    3. This can lead to 'file or directory not found' or other collection errors
+    """
+    # Create a tests subdirectory with isolated tests
+    tests_dir = pytester.mkdir("tests")
+    test_file = tests_dir / "test_isolated.py"
+    test_file.write_text("""
+import pytest
+
+@pytest.mark.isolated(group="1")
+def test_in_subdir_1():
+    assert True
+
+@pytest.mark.isolated(group="2")
+def test_in_subdir_2():
+    assert True
+""")
+
+    # Run pytest with directory argument 'tests'
+    # This should work - the subprocess should only get the nodeids, not 'tests'
+    result = pytester.runpytest("-v", "tests")
+    result.assert_outcomes(passed=2)
+
+
+def test_exitfirst_option(pytester: Pytester):
+    """Test that -x/--exitfirst stops execution after first failure"""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated(group="a")
+        def test_fail_first():
+            assert False, "First failure"
+
+        @pytest.mark.isolated(group="b")
+        def test_should_not_run_1():
+            assert True
+
+        @pytest.mark.isolated(group="c")
+        def test_should_not_run_2():
+            assert True
+    """
+    )
+
+    result = pytester.runpytest("-v", "-x")
+    result.assert_outcomes(failed=1)
+    # Verify the other tests were not run
+    assert "test_should_not_run_1" not in result.stdout.str()
+    assert "test_should_not_run_2" not in result.stdout.str()
+    assert "stopping after 1 failures" in result.stdout.str()
+
+
+def test_positional_group_argument(pytester: Pytester):
+    """Test that @pytest.mark.isolated("groupname") positional syntax works."""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        shared = []
+
+        @pytest.mark.isolated("shared_group")
+        def test_first():
+            shared.append(1)
+            assert len(shared) == 1
+
+        @pytest.mark.isolated("shared_group")
+        def test_second():
+            shared.append(2)
+            assert len(shared) == 2  # Same group, shared state
+    """
+    )
+
+    result = pytester.runpytest("-v")
+    result.assert_outcomes(passed=2)
+
+
+def test_isolated_flag_runs_all_tests(pytester: Pytester):
+    """Test that --isolated flag runs all tests in isolation."""
+    pytester.makepyfile(
+        """
+        counter = 0
+
+        def test_normal_1():
+            global counter
+            counter += 1
+            assert counter == 1  # Would fail if sharing state
+
+        def test_normal_2():
+            global counter
+            counter += 1
+            assert counter == 1  # Should have fresh state with --isolated
+    """
+    )
+
+    result = pytester.runpytest("-v", "--isolated")
+    result.assert_outcomes(passed=2)
+
+
+def test_module_marker_groups_all_functions(pytester: Pytester):
+    """Test that pytestmark at module level groups all functions together."""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        pytestmark = pytest.mark.isolated
+
+        shared = []
+
+        def test_first():
+            shared.append(1)
+            assert len(shared) == 1
+
+        def test_second():
+            shared.append(2)
+            assert len(shared) == 2  # Same module, shared subprocess
+
+        def test_third():
+            shared.append(3)
+            assert len(shared) == 3  # Same module, shared subprocess
+    """
+    )
+
+    result = pytester.runpytest("-v")
+    result.assert_outcomes(passed=3)
