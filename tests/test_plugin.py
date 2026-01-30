@@ -161,7 +161,7 @@ def test_subprocess_crash_during_test_execution(pytester: Pytester):
     failed with an informative error message.
 
     os.abort() works cross-platform: on Unix it sends SIGABRT (signal 6),
-    on Windows it terminates the process abnormally.
+    on Windows it terminates the process abnormally with exit code 3.
     """
     pytester.makepyfile(
         """
@@ -179,8 +179,8 @@ def test_subprocess_crash_during_test_execution(pytester: Pytester):
     result.assert_outcomes(failed=1)
     # Should see crash information
     stdout = result.stdout.str()
-    # On Unix: "crashed with signal 6" (SIGABRT), on Windows: different message
-    assert "crashed with signal" in stdout or "exited with code" in stdout
+    # On Unix: "crashed with signal", on Windows: "crashed with exit code"
+    assert "crashed with signal" in stdout or "crashed with exit code" in stdout
 
 
 def test_subprocess_crash_with_multiple_tests_in_group(pytester: Pytester):
@@ -214,7 +214,7 @@ def test_subprocess_crash_with_multiple_tests_in_group(pytester: Pytester):
     result.assert_outcomes(passed=1, failed=2)
     stdout = result.stdout.str()
     assert "test_crash" in stdout
-    assert "crashed with signal" in stdout or "exited with code" in stdout
+    assert "crashed with signal" in stdout or "crashed with exit code" in stdout
 
 
 def test_timeout_handling(pytester: Pytester):
