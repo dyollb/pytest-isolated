@@ -42,6 +42,14 @@ _FORWARD_OPTIONS_WITH_VALUE: Final = {
 }
 
 
+def _has_isolated_marker(obj: Any) -> bool:
+    """Check if an object has the isolated marker in its pytestmark."""
+    markers = getattr(obj, "pytestmark", [])
+    if not isinstance(markers, list):
+        markers = [markers]
+    return any(getattr(m, "name", None) == "isolated" for m in markers)
+
+
 class _TestRecord(TypedDict, total=False):
     """Structure for test phase results from subprocess."""
 
@@ -176,39 +184,19 @@ def pytest_collection_modifyitems(
                 group = item.nodeid
             # Check if marker was applied to a class or module
             elif isinstance(item, pytest.Function):
-                if item.cls is not None and hasattr(item.cls, "pytestmark"):
-                    class_markers = getattr(item.cls, "pytestmark", [])
-                    if not isinstance(class_markers, list):
-                        class_markers = [class_markers]
-                    has_class_marker = any(
-                        getattr(cm, "name", None) == "isolated" for cm in class_markers
-                    )
-                    if has_class_marker:
-                        # Group by class name (module::class)
-                        parts = item.nodeid.split("::")
-                        group = "::".join(parts[:2]) if len(parts) >= 3 else item.nodeid
-                    else:
-                        group = item.nodeid
-                # Check if marker was applied at module level (pytestmark)
-                elif hasattr(item.module, "pytestmark"):
-                    module_markers = getattr(item.module, "pytestmark", [])
-                    if not isinstance(module_markers, list):
-                        module_markers = [module_markers]
-                    has_module_marker = any(
-                        getattr(mm, "name", None) == "isolated" for mm in module_markers
-                    )
-                    if has_module_marker:
-                        # Group by module name (first part of nodeid)
-                        parts = item.nodeid.split("::")
-                        group = parts[0]
-                    else:
-                        group = item.nodeid
+                if item.cls is not None and _has_isolated_marker(item.cls):
+                    # Group by class name (module::class)
+                    parts = item.nodeid.split("::")
+                    group = "::".join(parts[:2]) if len(parts) >= 3 else item.nodeid
+                elif _has_isolated_marker(item.module):
+                    # Group by module name (first part of nodeid)
+                    parts = item.nodeid.split("::")
+                    group = parts[0]
                 else:
                     # Explicit marker on function uses unique nodeid
                     group = item.nodeid
             else:
                 # Non-Function items use unique nodeid
-                group = item.nodeid
                 group = item.nodeid
 
         # Store group-specific timeout (first marker wins)

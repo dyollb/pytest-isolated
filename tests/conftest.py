@@ -38,7 +38,7 @@ class _SingletonApplication:
         cls._instance = None
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def application() -> _SingletonApplication:
     """Provide a singleton application instance.
 

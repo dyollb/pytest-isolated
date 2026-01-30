@@ -573,3 +573,77 @@ def test_exitfirst_option(pytester: Pytester):
     assert "test_should_not_run_1" not in result.stdout.str()
     assert "test_should_not_run_2" not in result.stdout.str()
     assert "stopping after 1 failures" in result.stdout.str()
+
+
+def test_positional_group_argument(pytester: Pytester):
+    """Test that @pytest.mark.isolated("groupname") positional syntax works."""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        shared = []
+
+        @pytest.mark.isolated("shared_group")
+        def test_first():
+            shared.append(1)
+            assert len(shared) == 1
+
+        @pytest.mark.isolated("shared_group")
+        def test_second():
+            shared.append(2)
+            assert len(shared) == 2  # Same group, shared state
+    """
+    )
+
+    result = pytester.runpytest("-v")
+    result.assert_outcomes(passed=2)
+
+
+def test_isolated_flag_runs_all_tests(pytester: Pytester):
+    """Test that --isolated flag runs all tests in isolation."""
+    pytester.makepyfile(
+        """
+        counter = 0
+
+        def test_normal_1():
+            global counter
+            counter += 1
+            assert counter == 1  # Would fail if sharing state
+
+        def test_normal_2():
+            global counter
+            counter += 1
+            assert counter == 1  # Should have fresh state with --isolated
+    """
+    )
+
+    result = pytester.runpytest("-v", "--isolated")
+    result.assert_outcomes(passed=2)
+
+
+def test_module_marker_groups_all_functions(pytester: Pytester):
+    """Test that pytestmark at module level groups all functions together."""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        pytestmark = pytest.mark.isolated
+
+        shared = []
+
+        def test_first():
+            shared.append(1)
+            assert len(shared) == 1
+
+        def test_second():
+            shared.append(2)
+            assert len(shared) == 2  # Same module, shared subprocess
+
+        def test_third():
+            shared.append(3)
+            assert len(shared) == 3  # Same module, shared subprocess
+    """
+    )
+
+    result = pytester.runpytest("-v")
+    result.assert_outcomes(passed=3)
