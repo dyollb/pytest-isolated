@@ -214,6 +214,7 @@ def pytest_collection_modifyitems(
 
 def _emit_report(
     item: pytest.Item,
+    *,
     when: Literal["setup", "call", "teardown"],
     outcome: Literal["passed", "failed", "skipped"],
     longrepr: str = "",
@@ -277,12 +278,12 @@ def _emit_failure_for_items(
     """
     for it in items:
         xfail_marker = it.get_closest_marker("xfail")
-        _emit_report(it, "setup", "passed", capture_passed=capture_passed)
+        _emit_report(it, when="setup", outcome="passed", capture_passed=capture_passed)
         if xfail_marker:
             _emit_report(
                 it,
-                "call",
-                "skipped",
+                when="call",
+                outcome="skipped",
                 longrepr=error_message,
                 wasxfail=True,
                 capture_passed=capture_passed,
@@ -290,13 +291,15 @@ def _emit_failure_for_items(
         else:
             _emit_report(
                 it,
-                "call",
-                "failed",
+                when="call",
+                outcome="failed",
                 longrepr=error_message,
                 capture_passed=capture_passed,
             )
             session.testsfailed += 1
-        _emit_report(it, "teardown", "passed", capture_passed=capture_passed)
+        _emit_report(
+            it, when="teardown", outcome="passed", capture_passed=capture_passed
+        )
 
 
 def pytest_runtestloop(session: pytest.Session) -> int | None:
@@ -394,6 +397,8 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         ):
             subprocess_cwd = str(config.invocation_params.dir)
 
+        proc_stdout = b""
+        proc_stderr = b""
         try:
             proc = subprocess.run(
                 cmd,
@@ -404,9 +409,13 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                 cwd=subprocess_cwd,
             )
             returncode = proc.returncode
+            proc_stdout = proc.stdout or b""
+            proc_stderr = proc.stderr or b""
             timed_out = False
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             returncode = -1
+            proc_stdout = exc.stdout or b""
+            proc_stderr = exc.stderr or b""
             timed_out = True
 
         execution_time = time.time() - start_time
@@ -456,26 +465,137 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
 
         # Handle crash during collection (no results produced)
         if not results:
+            stderr_text = proc_stderr.decode("utf-8", errors="replace").strip()
             msg = (
                 f"Subprocess group={group_name!r} exited with code {returncode} "
                 f"and produced no per-test report. The subprocess may have "
                 f"crashed during collection."
             )
+            if stderr_text:
+                msg += f"\n\nSubprocess stderr:\n{stderr_text}"
             _emit_failure_for_items(group_items, msg, session, capture_passed)
             continue
+
+        # Handle mid-test crash: subprocess crashed (negative returncode) with
+        # partial results - some tests have incomplete phases (e.g., setup but no call)
+        if returncode < 0:
+            stderr_text = proc_stderr.decode("utf-8", errors="replace").strip()
+            crashed_items: list[pytest.Item] = []
+            not_run_items: list[pytest.Item] = []
+
+            for it in group_items:
+                node_results = results.get(it.nodeid, {})
+                # Test started (has setup) but crashed before call completed
+                if node_results and "call" not in node_results:
+                    crashed_items.append(it)
+                # Test never started (no results at all)
+                elif not node_results:
+                    not_run_items.append(it)
+
+            # Emit failures for crashed tests
+            if crashed_items:
+                crash_msg = (
+                    f"Subprocess crashed with signal {-returncode} during "
+                    f"test execution."
+                )
+                if stderr_text:
+                    crash_msg += f"\n\nSubprocess stderr:\n{stderr_text}"
+
+                for it in crashed_items:
+                    node_results = results.get(it.nodeid, {})
+                    # Emit setup phase if it was recorded
+                    if "setup" in node_results:
+                        rec = node_results["setup"]
+                        _emit_report(
+                            it,
+                            when="setup",
+                            outcome=rec["outcome"],
+                            longrepr=rec.get("longrepr", ""),
+                            duration=rec.get("duration", 0.0),
+                            capture_passed=capture_passed,
+                        )
+                    else:
+                        _emit_report(
+                            it,
+                            when="setup",
+                            outcome="passed",
+                            capture_passed=capture_passed,
+                        )
+
+                    # Emit call phase as failed with crash info
+                    xfail_marker = it.get_closest_marker("xfail")
+                    if xfail_marker:
+                        _emit_report(
+                            it,
+                            when="call",
+                            outcome="skipped",
+                            longrepr=crash_msg,
+                            wasxfail=True,
+                            capture_passed=capture_passed,
+                        )
+                    else:
+                        _emit_report(
+                            it,
+                            when="call",
+                            outcome="failed",
+                            longrepr=crash_msg,
+                            capture_passed=capture_passed,
+                        )
+                        session.testsfailed += 1
+
+                    _emit_report(
+                        it,
+                        when="teardown",
+                        outcome="passed",
+                        capture_passed=capture_passed,
+                    )
+                    # Remove from results so they're not processed again
+                    results.pop(it.nodeid, None)
+
+            # Emit failures for tests that never ran due to earlier crash
+            if not_run_items:
+                not_run_msg = (
+                    f"Test did not run - subprocess crashed with signal "
+                    f"{-returncode} during earlier test execution."
+                )
+                if stderr_text:
+                    not_run_msg += f"\n\nSubprocess stderr:\n{stderr_text}"
+                _emit_failure_for_items(
+                    not_run_items, not_run_msg, session, capture_passed
+                )
+                for it in not_run_items:
+                    results.pop(it.nodeid, None)
 
         # Emit per-test results into parent (all phases)
         for it in group_items:
             node_results = results.get(it.nodeid, {})
 
+            # Skip tests that were already handled by crash detection above
+            if it.nodeid not in results:
+                continue
+
+            # Check if setup passed (to determine if missing call is expected)
+            setup_passed = (
+                "setup" in node_results and node_results["setup"]["outcome"] == "passed"
+            )
+
             # Emit setup, call, teardown in order
             for when in ["setup", "call", "teardown"]:  # type: ignore[assignment]
                 if when not in node_results:
-                    # If missing a phase, synthesize a passing one
-                    if when == "call" and not node_results:
-                        # Test completely missing from subprocess results
-                        msg = f"Missing result from subprocess for {it.nodeid}"
-                        _emit_failure_for_items([it], msg, session, capture_passed)
+                    # If missing call phase AND setup passed, emit a failure
+                    # (crash detection above should handle most cases, but this
+                    # is a safety net for unexpected situations)
+                    # If setup failed, missing call is expected (pytest skips call)
+                    if when == "call" and setup_passed:
+                        msg = f"Missing 'call' phase result from subprocess for {it.nodeid}"
+                        _emit_report(
+                            it,
+                            when="call",
+                            outcome="failed",
+                            longrepr=msg,
+                            capture_passed=capture_passed,
+                        )
+                        session.testsfailed += 1
                     continue
 
                 rec = node_results[when]

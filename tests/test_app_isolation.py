@@ -39,6 +39,14 @@ def test_application2(application) -> None:
 
 @pytest.mark.isolated
 @pytest.mark.xfail(
+    reason="""A simple failing test to check isolation handling of failures."""
+)
+def test_failing():
+    assert False, "Intentional failure to test isolation handling"  # noqa: B011
+
+
+@pytest.mark.isolated
+@pytest.mark.xfail(
     reason="This test is expected to segfault. "
     "If properly isolated, then it will be a FAILURE otherwise it will be an ERROR."
 )

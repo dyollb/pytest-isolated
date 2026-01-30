@@ -153,6 +153,66 @@ def test_subprocess_crash_handling(pytester: Pytester):
     assert "This should be reported as failed" in result.stdout.str()
 
 
+def test_segfault_during_test_execution(pytester: Pytester):
+    """Test that segfault during test execution is reported as failure.
+
+    When a test causes a segfault (or other signal-based crash), the subprocess
+    dies mid-execution. The plugin should detect this and report the test as
+    failed with an informative error message including the signal number.
+    """
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated
+        def test_segfault():
+            import ctypes
+            # Trigger a segfault by reading from null pointer
+            ctypes.string_at(0)
+    """
+    )
+
+    result = pytester.runpytest("-v")
+    result.assert_outcomes(failed=1)
+    # Should see crash information with signal number (SIGSEGV = 11)
+    stdout = result.stdout.str()
+    assert "crashed with signal" in stdout or "Segmentation fault" in stdout
+
+
+def test_segfault_with_multiple_tests_in_group(pytester: Pytester):
+    """Test that when one test segfaults, remaining tests in group are reported.
+
+    If a group contains multiple tests and one crashes, the remaining tests
+    should be marked as 'not run' rather than silently disappearing.
+    """
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated(group="crashgroup")
+        def test_before_crash():
+            assert True
+
+        @pytest.mark.isolated(group="crashgroup")
+        def test_segfault():
+            import ctypes
+            ctypes.string_at(0)
+
+        @pytest.mark.isolated(group="crashgroup")
+        def test_after_crash():
+            # This test should be reported as not run
+            assert True
+    """
+    )
+
+    result = pytester.runpytest("-v")
+    # test_before_crash passes, test_segfault fails, test_after_crash fails (not run)
+    result.assert_outcomes(passed=1, failed=2)
+    stdout = result.stdout.str()
+    assert "test_segfault" in stdout
+    assert "crashed with signal" in stdout or "Segmentation fault" in stdout
+
+
 def test_timeout_handling(pytester: Pytester):
     """Test that timeout is enforced and reported."""
     pytester.makepyfile(
