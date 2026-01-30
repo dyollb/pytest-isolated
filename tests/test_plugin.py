@@ -254,6 +254,34 @@ def test_default_grouping_by_module(pytester: Pytester):
     result.assert_outcomes(passed=3)
 
 
+def test_class_marker_grouping(pytester: Pytester):
+    """Test that class-level @pytest.mark.isolated groups all methods together."""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated
+        class TestDB:
+            shared = []
+
+            def test_a(self):
+                self.shared.append("a")
+                assert len(self.shared) == 1
+
+            def test_b(self):
+                self.shared.append("b")
+                assert len(self.shared) == 2  # Same subprocess, shared state
+
+            def test_c(self):
+                self.shared.append("c")
+                assert len(self.shared) == 3  # Same subprocess, shared state
+    """
+    )
+
+    result = pytester.runpytest("-v")
+    result.assert_outcomes(passed=3)
+
+
 def test_skipped_test_handling(pytester: Pytester):
     """Test that skipped tests are properly reported."""
     pytester.makepyfile(

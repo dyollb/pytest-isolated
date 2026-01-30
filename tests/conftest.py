@@ -15,6 +15,7 @@ class _SingletonApplication:
     """
 
     _instance: _SingletonApplication | None = None
+    _init_called: bool
 
     def __new__(cls) -> _SingletonApplication:
         if cls._instance is None:

@@ -61,6 +61,12 @@ class _TestRecord(TypedDict, total=False):
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("isolated")
     group.addoption(
+        "--isolated",
+        action="store_true",
+        default=False,
+        help="Run all tests in isolated subprocesses",
+    )
+    group.addoption(
         "--isolated-timeout",
         type=int,
         default=None,
@@ -138,25 +144,78 @@ def pytest_collection_modifyitems(
         config._subprocess_normal_items = items  # type: ignore[attr-defined]
         return
 
+    # If --isolated is set, run all tests in isolation
+    run_all_isolated = config.getoption("isolated", False)
+
     groups: OrderedDict[str, list[pytest.Item]] = OrderedDict()
     group_timeouts: dict[str, int | None] = {}  # Track timeout per group
     normal: list[pytest.Item] = []
 
     for item in items:
         m = item.get_closest_marker("isolated")
-        if not m:
+
+        # Skip non-isolated tests unless --isolated flag is set
+        if not m and not run_all_isolated:
             normal.append(item)
             continue
 
-        group = m.kwargs.get("group")
-        # Default to nodeid for unique per-test isolation
+        # Get group from marker (positional arg, keyword arg, or default)
+        group = None
+        if m:
+            # Support @pytest.mark.isolated("groupname") - positional arg
+            if m.args:
+                group = m.args[0]
+            # Support @pytest.mark.isolated(group="groupname") - keyword arg
+            elif "group" in m.kwargs:
+                group = m.kwargs["group"]
+
+        # Default grouping logic
         if group is None:
-            group = item.nodeid
+            # If --isolated flag is used (no explicit marker), use unique nodeid
+            if not m:
+                group = item.nodeid
+            # Check if marker was applied to a class or module
+            elif isinstance(item, pytest.Function):
+                if item.cls is not None and hasattr(item.cls, "pytestmark"):
+                    class_markers = getattr(item.cls, "pytestmark", [])
+                    if not isinstance(class_markers, list):
+                        class_markers = [class_markers]
+                    has_class_marker = any(
+                        getattr(cm, "name", None) == "isolated" for cm in class_markers
+                    )
+                    if has_class_marker:
+                        # Group by class name (module::class)
+                        parts = item.nodeid.split("::")
+                        group = "::".join(parts[:2]) if len(parts) >= 3 else item.nodeid
+                    else:
+                        group = item.nodeid
+                # Check if marker was applied at module level (pytestmark)
+                elif hasattr(item.module, "pytestmark"):
+                    module_markers = getattr(item.module, "pytestmark", [])
+                    if not isinstance(module_markers, list):
+                        module_markers = [module_markers]
+                    has_module_marker = any(
+                        getattr(mm, "name", None) == "isolated" for mm in module_markers
+                    )
+                    if has_module_marker:
+                        # Group by module name (first part of nodeid)
+                        parts = item.nodeid.split("::")
+                        group = parts[0]
+                    else:
+                        group = item.nodeid
+                else:
+                    # Explicit marker on function uses unique nodeid
+                    group = item.nodeid
+            else:
+                # Non-Function items use unique nodeid
+                group = item.nodeid
+                group = item.nodeid
 
         # Store group-specific timeout (first marker wins)
         group_key = str(group)
         if group_key not in group_timeouts:
-            group_timeouts[group_key] = m.kwargs.get("timeout")
+            timeout = m.kwargs.get("timeout") if m else None
+            group_timeouts[group_key] = timeout
 
         groups.setdefault(group_key, []).append(item)
 
