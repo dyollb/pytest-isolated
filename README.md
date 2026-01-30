@@ -3,7 +3,7 @@
 [![Tests](https://github.com/dyollb/pytest-isolated/actions/workflows/test.yml/badge.svg)](https://github.com/dyollb/pytest-isolated/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/pytest-isolated.svg)](https://pypi.org/project/pytest-isolated/)
 
-A pytest plugin that runs marked tests in isolated subprocesses with intelligent grouping.
+A cross-platform pytest plugin that runs marked tests in isolated subprocesses with intelligent grouping.
 
 ## Features
 
@@ -37,6 +37,7 @@ def test_isolated():
 Tests with the same group run together in one subprocess:
 
 ```python
+# Using keyword argument
 @pytest.mark.isolated(group="mygroup")
 def test_one():
     shared_state.append(1)
@@ -45,6 +46,11 @@ def test_one():
 def test_two():
     # Sees state from test_one
     assert len(shared_state) == 2
+
+# Or using positional argument
+@pytest.mark.isolated("mygroup")
+def test_three():
+    shared_state.append(3)
 ```
 
 Set timeout per test group:
@@ -58,11 +64,46 @@ def test_with_timeout():
 
 **Note:** Tests without an explicit `group` parameter each run in their own unique subprocess for maximum isolation.
 
+### Class and Module Markers
+
+Apply to entire classes to share state between methods:
+
+```python
+@pytest.mark.isolated
+class TestDatabase:
+    def test_setup(self):
+        self.db = create_database()
+
+    def test_query(self):
+        # Shares state with test_setup
+        result = self.db.query("SELECT 1")
+        assert result
+```
+
+Apply to entire modules using `pytestmark`:
+
+```python
+import pytest
+
+pytestmark = pytest.mark.isolated
+
+def test_one():
+    # Runs in isolated subprocess
+    pass
+
+def test_two():
+    # Shares subprocess with test_one
+    pass
+```
+
 ## Configuration
 
 ### Command Line
 
 ```bash
+# Run all tests in isolation (even without @pytest.mark.isolated)
+pytest --isolated
+
 # Set isolated test timeout (seconds)
 pytest --isolated-timeout=60
 
