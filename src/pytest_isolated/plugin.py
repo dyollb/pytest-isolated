@@ -397,7 +397,6 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         ):
             subprocess_cwd = str(config.invocation_params.dir)
 
-        proc_stdout = b""
         proc_stderr = b""
         try:
             proc = subprocess.run(
@@ -409,12 +408,10 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                 cwd=subprocess_cwd,
             )
             returncode = proc.returncode
-            proc_stdout = proc.stdout or b""
             proc_stderr = proc.stderr or b""
             timed_out = False
         except subprocess.TimeoutExpired as exc:
             returncode = -1
-            proc_stdout = exc.stdout or b""
             proc_stderr = exc.stderr or b""
             timed_out = True
 
@@ -587,7 +584,10 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                     # is a safety net for unexpected situations)
                     # If setup failed, missing call is expected (pytest skips call)
                     if when == "call" and setup_passed:
-                        msg = f"Missing 'call' phase result from subprocess for {it.nodeid}"
+                        msg = (
+                            "Missing 'call' phase result"
+                            f" from subprocess for {it.nodeid}"
+                        )
                         _emit_report(
                             it,
                             when="call",
@@ -602,7 +602,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                 _emit_report(
                     it,
                     when=when,  # type: ignore[arg-type]
-                    outcome=rec["outcome"],
+                    outcome=rec.get("outcome", "failed"),  # type: ignore[arg-type]
                     longrepr=rec.get("longrepr", ""),
                     duration=rec.get("duration", 0.0),
                     stdout=rec.get("stdout", ""),
