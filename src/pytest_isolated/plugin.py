@@ -355,20 +355,30 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         config, "_subprocess_group_timeouts", {}
     )
 
-    # session.items contains the final filtered list (after -k, -m, etc.)
-    # Filter groups to only include items that are still in session
-    # and separate normal items from isolated items
-    session_item_nodeids = {it.nodeid for it in session.items}
+    # session.items contains the final filtered and ordered
+    # list (after -k, -m, --ff, etc.)
+    # We need to:
+    # 1. Filter groups to only include items in session.items
+    # 2. Preserve the order from session.items (important for --ff, --nf, ...)
 
+    # Build a mapping from nodeid to (item, group_name) for isolated tests
+    nodeid_to_group: dict[str, tuple[pytest.Item, str]] = {}
+    for group_name, group_items in groups.items():
+        for it in group_items:
+            nodeid_to_group[it.nodeid] = (it, group_name)
+
+    # Rebuild groups in session.items order
     filtered_groups: OrderedDict[str, list[pytest.Item]] = OrderedDict()
     isolated_nodeids: set[str] = set()
 
-    for group_name, group_items in groups.items():
-        filtered_items = [it for it in group_items if it.nodeid in session_item_nodeids]
-        if filtered_items:
-            filtered_groups[group_name] = filtered_items
-            for it in filtered_items:
-                isolated_nodeids.add(it.nodeid)
+    for it in session.items:
+        if it.nodeid in nodeid_to_group:
+            _, group_name = nodeid_to_group[it.nodeid]
+            if group_name not in filtered_groups:
+                filtered_groups[group_name] = []
+            filtered_groups[group_name].append(it)
+            isolated_nodeids.add(it.nodeid)
+
     groups = filtered_groups
 
     # Normal items are those in session.items but not in isolated groups
