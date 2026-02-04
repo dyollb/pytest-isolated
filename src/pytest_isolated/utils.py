@@ -13,11 +13,6 @@ def _has_isolated_marker(obj: Any) -> bool:
     return any(getattr(m, "name", None) == "isolated" for m in markers)
 
 
-# ---------------------------------------------------------------------------
-# Cross-platform crash detection helpers
-# ---------------------------------------------------------------------------
-
-
 def _format_crash_reason(returncode: int) -> str:
     """Format a human-readable crash reason from a return code.
 

@@ -76,8 +76,3 @@ def pytest_configure(config: pytest.Config) -> None:
         "fresh Python subprocess; tests with the same group run together in "
         "one subprocess. timeout (seconds) overrides global --isolated-timeout.",
     )
-
-
-# ----------------------------
-# CHILD MODE: record results + captured output per test phase
-# ----------------------------
