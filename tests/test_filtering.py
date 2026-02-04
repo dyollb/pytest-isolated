@@ -1,6 +1,108 @@
-"""Tests for pytest filtering and ordering options with isolated tests."""
+"""Tests for pytest filtering and ordering options with isolated tests.
+
+This module tests that pytest's built-in filtering options (-k, -m, --lf, --ff, --nf)
+work correctly with isolated tests.
+"""
 
 from pytest import Pytester
+
+
+def test_k_filtering_with_isolated_tests(pytester: Pytester):
+    """Test that -k option works with isolated tests."""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated(group="group1")
+        def test_foo_one():
+            assert True
+
+        @pytest.mark.isolated(group="group1")
+        def test_foo_two():
+            assert True
+
+        @pytest.mark.isolated(group="group2")
+        def test_bar_one():
+            assert True
+
+        @pytest.mark.isolated(group="group2")
+        def test_bar_two():
+            assert True
+    """
+    )
+
+    # Filter for tests with "foo" in the name
+    result = pytester.runpytest("-v", "-k", "foo")
+    result.assert_outcomes(passed=2)
+
+
+def test_k_filtering_with_isolated_and_normal_tests(pytester: Pytester):
+    """Test that -k option works with mixed isolated and normal tests."""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated
+        def test_isolated_match_this():
+            assert True
+
+        @pytest.mark.isolated
+        def test_isolated_skip_this():
+            assert True
+
+        def test_normal_match_this():
+            assert True
+
+        def test_normal_skip_this():
+            assert True
+    """
+    )
+
+    # Filter for tests with "match" in the name
+    result = pytester.runpytest("-v", "-k", "match")
+    result.assert_outcomes(passed=2)
+
+
+def test_k_filtering_complex_expression(pytester: Pytester):
+    """Test that -k option works with complex boolean expressions."""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated(group="mygroup")
+        def test_foo():
+            assert True
+
+        @pytest.mark.isolated(group="mygroup")
+        def test_bar():
+            assert True
+
+        @pytest.mark.isolated(group="mygroup")
+        def test_baz():
+            assert True
+    """
+    )
+
+    # Complex expression: foo or bar (but not baz)
+    result = pytester.runpytest("-v", "-k", "foo or bar")
+    result.assert_outcomes(passed=2)
+
+
+def test_k_filtering_with_isolated_flag(pytester: Pytester):
+    """Test that -k option works when using --isolated flag."""
+    pytester.makepyfile(
+        """
+        def test_match_this():
+            assert True
+
+        def test_skip_this():
+            assert True
+    """
+    )
+
+    # Use --isolated flag and -k filtering
+    result = pytester.runpytest("-v", "--isolated", "-k", "match")
+    result.assert_outcomes(passed=1)
 
 
 def test_last_failed_option(pytester: Pytester):
