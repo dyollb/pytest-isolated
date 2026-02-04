@@ -203,6 +203,18 @@ pytest --junitxml=report.xml --durations=10
 
 ## Advanced
 
+### Coverage Integration
+
+To collect coverage from isolated tests, enable subprocess tracking in `pyproject.toml`:
+
+```toml
+[tool.coverage.run]
+parallel = true
+concurrency = ["subprocess"]
+```
+
+See the [coverage.py subprocess documentation](https://coverage.readthedocs.io/en/latest/subprocess.html) for details.
+
 ### Timeout Handling
 
 ```bash

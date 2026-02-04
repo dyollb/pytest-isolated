@@ -189,7 +189,6 @@ def pytest_collection_modifyitems(
     # If --no-isolation is set, treat all tests as normal (no subprocess isolation)
     if config.getoption("no_isolation", False):
         config._subprocess_groups = OrderedDict()  # type: ignore[attr-defined]
-        config._subprocess_normal_items = items  # type: ignore[attr-defined]
         return
 
     # If --isolated is set, run all tests in isolation
@@ -197,14 +196,12 @@ def pytest_collection_modifyitems(
 
     groups: OrderedDict[str, list[pytest.Item]] = OrderedDict()
     group_timeouts: dict[str, int | None] = {}  # Track timeout per group
-    normal: list[pytest.Item] = []
 
     for item in items:
         m = item.get_closest_marker("isolated")
 
         # Skip non-isolated tests unless --isolated flag is set
         if not m and not run_all_isolated:
-            normal.append(item)
             continue
 
         # Get group from marker (positional arg, keyword arg, or default)
@@ -249,7 +246,6 @@ def pytest_collection_modifyitems(
 
     config._subprocess_groups = groups  # type: ignore[attr-defined]
     config._subprocess_group_timeouts = group_timeouts  # type: ignore[attr-defined]
-    config._subprocess_normal_items = normal  # type: ignore[attr-defined]
 
 
 def _emit_report(
@@ -358,9 +354,35 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
     group_timeouts: dict[str, int | None] = getattr(
         config, "_subprocess_group_timeouts", {}
     )
-    normal_items: list[pytest.Item] = getattr(
-        config, "_subprocess_normal_items", session.items
-    )
+
+    # session.items contains the final filtered and ordered
+    # list (after -k, -m, --ff, etc.)
+    # We need to:
+    # 1. Filter groups to only include items in session.items
+    # 2. Preserve the order from session.items (important for --ff, --nf, ...)
+
+    # Build a mapping from nodeid to (item, group_name) for isolated tests
+    nodeid_to_group: dict[str, tuple[pytest.Item, str]] = {}
+    for group_name, group_items in groups.items():
+        for it in group_items:
+            nodeid_to_group[it.nodeid] = (it, group_name)
+
+    # Rebuild groups in session.items order
+    filtered_groups: OrderedDict[str, list[pytest.Item]] = OrderedDict()
+    isolated_nodeids: set[str] = set()
+
+    for it in session.items:
+        if it.nodeid in nodeid_to_group:
+            _, group_name = nodeid_to_group[it.nodeid]
+            if group_name not in filtered_groups:
+                filtered_groups[group_name] = []
+            filtered_groups[group_name].append(it)
+            isolated_nodeids.add(it.nodeid)
+
+    groups = filtered_groups
+
+    # Normal items are those in session.items but not in isolated groups
+    normal_items = [it for it in session.items if it.nodeid not in isolated_nodeids]
 
     # Get default timeout configuration
     timeout_opt = config.getoption("isolated_timeout", None)
@@ -393,25 +415,32 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         if hasattr(config, "invocation_params") and hasattr(
             config.invocation_params, "args"
         ):
-            skip_next = False
-
-            for arg in config.invocation_params.args:
-                if skip_next:
-                    skip_next = False
-                    continue
+            i = 0
+            args = config.invocation_params.args
+            while i < len(args):
+                arg = args[i]
 
                 # Forward only explicitly allowed options
                 if arg in _FORWARD_FLAGS:
                     forwarded_args.append(arg)
+                    i += 1
                 elif arg in _FORWARD_OPTIONS_WITH_VALUE:
                     forwarded_args.append(arg)
-                    skip_next = True  # Next arg is the value
+                    # Next arg is the value - forward it too
+                    if i + 1 < len(args):
+                        forwarded_args.append(args[i + 1])
+                        i += 2
+                    else:
+                        i += 1
                 elif arg.startswith(
                     tuple(f"{opt}=" for opt in _FORWARD_OPTIONS_WITH_VALUE)
                 ):
                     forwarded_args.append(arg)
-
-                # Skip everything else (positional args, test paths, unknown options)
+                    i += 1
+                else:
+                    # Skip everything else (positional args, test paths,
+                    # unknown options)
+                    i += 1
 
         # Build pytest command for subprocess
         cmd = [sys.executable, "-m", "pytest"]
