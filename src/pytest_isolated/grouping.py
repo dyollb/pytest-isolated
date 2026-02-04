@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import os
 from collections import OrderedDict
+from typing import Any
 
 import pytest
 
 from .config import SUBPROC_ENV
-from .utils import _has_isolated_marker
+
+
+def _has_isolated_marker(obj: Any) -> bool:
+    """Check if an object has the isolated marker in its pytestmark."""
+    markers = getattr(obj, "pytestmark", [])
+    if not isinstance(markers, list):
+        markers = [markers]
+    return any(getattr(m, "name", None) == "isolated" for m in markers)
 
 
 def pytest_collection_modifyitems(

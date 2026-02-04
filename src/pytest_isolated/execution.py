@@ -21,8 +21,12 @@ from .config import (
     SUBPROC_ENV,
     SUBPROC_REPORT_PATH,
 )
-from .reporting import _emit_failure_for_items, _emit_report
-from .utils import _format_crash_message, _TestRecord
+from .reporting import (
+    _emit_failure_for_items,
+    _emit_report,
+    _format_crash_message,
+    _TestRecord,
+)
 
 
 def pytest_runtestloop(session: pytest.Session) -> int | None:
