@@ -12,6 +12,13 @@ SUBPROC_ENV: Final = "PYTEST_RUNNING_IN_SUBPROCESS"
 # Parent tells child where to write JSONL records per test call
 SUBPROC_REPORT_PATH: Final = "PYTEST_SUBPROCESS_REPORT_PATH"
 
+# Default timeout for isolated test groups (seconds)
+DEFAULT_TIMEOUT: Final = 300
+
+# Config attribute names (stored on pytest.Config object)
+CONFIG_ATTR_GROUPS: Final = "_subprocess_groups"
+CONFIG_ATTR_GROUP_TIMEOUTS: Final = "_subprocess_group_timeouts"
+
 # Options that should be forwarded to subprocess (flags without values)
 _FORWARD_FLAGS: Final = {
     "-v",
@@ -47,7 +54,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--isolated-timeout",
         type=int,
         default=None,
-        help="Timeout in seconds for isolated test groups (default: 300)",
+        help=(
+            f"Timeout in seconds for isolated test groups (default: {DEFAULT_TIMEOUT})"
+        ),
     )
     group.addoption(
         "--no-isolation",
@@ -58,7 +67,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addini(
         "isolated_timeout",
         type="string",
-        default="300",
+        default=str(DEFAULT_TIMEOUT),
         help="Default timeout in seconds for isolated test groups",
     )
     parser.addini(

@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from .config import SUBPROC_ENV
+from .config import CONFIG_ATTR_GROUP_TIMEOUTS, CONFIG_ATTR_GROUPS, SUBPROC_ENV
 
 
 def _has_isolated_marker(obj: Any) -> bool:
@@ -27,7 +27,7 @@ def pytest_collection_modifyitems(
 
     # If --no-isolation is set, treat all tests as normal (no subprocess isolation)
     if config.getoption("no_isolation", False):
-        config._subprocess_groups = OrderedDict()  # type: ignore[attr-defined]
+        setattr(config, CONFIG_ATTR_GROUPS, OrderedDict())
         return
 
     # If --isolated is set, run all tests in isolation
@@ -83,5 +83,5 @@ def pytest_collection_modifyitems(
 
         groups.setdefault(group_key, []).append(item)
 
-    config._subprocess_groups = groups  # type: ignore[attr-defined]
-    config._subprocess_group_timeouts = group_timeouts  # type: ignore[attr-defined]
+    setattr(config, CONFIG_ATTR_GROUPS, groups)
+    setattr(config, CONFIG_ATTR_GROUP_TIMEOUTS, group_timeouts)

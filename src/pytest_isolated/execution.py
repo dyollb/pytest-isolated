@@ -18,6 +18,9 @@ import pytest
 from .config import (
     _FORWARD_FLAGS,
     _FORWARD_OPTIONS_WITH_VALUE,
+    CONFIG_ATTR_GROUP_TIMEOUTS,
+    CONFIG_ATTR_GROUPS,
+    DEFAULT_TIMEOUT,
     SUBPROC_ENV,
     SUBPROC_REPORT_PATH,
 )
@@ -39,11 +42,9 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         return None  # child runs the normal loop
 
     config = session.config
-    groups = getattr(config, "_subprocess_groups", OrderedDict())
-    if not isinstance(groups, OrderedDict):
-        groups = OrderedDict()
+    groups = getattr(config, CONFIG_ATTR_GROUPS, OrderedDict())
     group_timeouts: dict[str, int | None] = getattr(
-        config, "_subprocess_group_timeouts", {}
+        config, CONFIG_ATTR_GROUP_TIMEOUTS, {}
     )
 
     # session.items contains the final filtered and ordered
@@ -78,7 +79,9 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
     # Get default timeout configuration
     timeout_opt = config.getoption("isolated_timeout", None)
     timeout_ini = config.getini("isolated_timeout")
-    default_timeout = timeout_opt or (int(timeout_ini) if timeout_ini else 300)
+    default_timeout = timeout_opt or (
+        int(timeout_ini) if timeout_ini else DEFAULT_TIMEOUT
+    )
 
     # Get capture configuration
     capture_passed = config.getini("isolated_capture_passed")
