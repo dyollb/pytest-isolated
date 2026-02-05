@@ -41,12 +41,12 @@ def test_timeout_plugin_integration_isolated(pytester: pytest.Pytester):
 
     result = pytester.runpytest_subprocess("-v")
     stdout = result.stdout.str()
-    
+
     # On Windows, pytest-timeout may kill the process before the summary line is printed
     if sys.platform != "win32":
         # On POSIX systems, verify exact outcomes
         result.assert_outcomes(failed=2)
-    
+
     # Verify pytest-timeout is reporting the timeouts (works on all platforms)
     assert "timeout" in stdout.lower() or "timed out" in stdout.lower()
     # Verify both tests were collected
@@ -75,12 +75,12 @@ def test_timeout_plugin_integration_normal(pytester: pytest.Pytester):
 
     result = pytester.runpytest_subprocess("-v")
     stdout = result.stdout.str()
-    
+
     # On Windows, pytest-timeout may kill the process before the summary line is printed
     if sys.platform != "win32":
         # On POSIX systems, verify exact outcomes
         result.assert_outcomes(failed=1)
-    
+
     # Verify pytest-timeout is reporting the timeouts (works on all platforms)
     assert "timeout" in stdout.lower() or "timed out" in stdout.lower()
     # Verify the test was collected and started
@@ -127,12 +127,12 @@ def test_timeout_plugin_integration_mixed(pytester: pytest.Pytester):
 
     result = pytester.runpytest_subprocess("-v")
     stdout = result.stdout.str()
-    
+
     # On Windows, pytest-timeout may kill the process before the summary line is printed
     if sys.platform != "win32":
         # On POSIX systems, verify exact outcomes
         result.assert_outcomes(failed=4)
-    
+
     # Verify pytest-timeout is reporting the timeouts (works on all platforms)
     assert "timeout" in stdout.lower() or "timed out" in stdout.lower()
     # Verify all tests were collected
