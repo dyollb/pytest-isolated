@@ -31,12 +31,11 @@ Issues = "https://github.com/dyollb/pytest-isolated/issues"
 
 [project.optional-dependencies]
 dev = [
-    "pre-commit",
     "build",
-    "ruff",
-]
-test = [
+    "mypy",
+    "pre-commit",
     "pytest-timeout",
+    "ruff",
 ]
 
 [project.entry-points.pytest11]
@@ -47,7 +46,6 @@ testpaths = ["tests"]
 addopts = "-v --strict-markers"
 # Plugin configuration options (examples)
 # isolated_timeout = "300"
-# isolated_capture_passed = false
 
 [tool.setuptools.dynamic]
 version = {attr = "pytest_isolated.__version__"}

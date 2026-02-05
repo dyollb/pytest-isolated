@@ -10,7 +10,7 @@ A cross-platform pytest plugin that runs marked tests in isolated subprocesses w
 - Run tests in fresh Python subprocesses to prevent state pollution
 - Group related tests to run together in the same subprocess
 - Handles crashes, timeouts, and setup/teardown failures
-- Captures stdout/stderr for failed tests
+- Respects pytest's standard output capture settings (`-s`, `--capture`)
 - Works with pytest reporters (JUnit XML, etc.)
 - Configurable timeouts to prevent hanging subprocesses
 - Cross-platform: Linux, macOS, Windows
@@ -114,6 +114,10 @@ pytest --isolated-timeout=60
 # Disable subprocess isolation for debugging
 pytest --no-isolation
 
+# Control output capture (standard pytest flags work with isolated tests)
+pytest -s                    # Disable capture, show all output
+pytest --capture=sys         # Capture at sys.stdout/stderr level
+
 # Combine with pytest debugger
 pytest --no-isolation --pdb
 ```
@@ -123,7 +127,6 @@ pytest --no-isolation --pdb
 ```ini
 [pytest]
 isolated_timeout = 300
-isolated_capture_passed = false
 ```
 
 Or in `pyproject.toml`:
@@ -131,7 +134,6 @@ Or in `pyproject.toml`:
 ```toml
 [tool.pytest.ini_options]
 isolated_timeout = "300"
-isolated_capture_passed = false
 ```
 
 ## Use Cases
@@ -241,7 +243,7 @@ if os.environ.get("PYTEST_RUNNING_IN_SUBPROCESS") == "1":
 
 **Tests timing out**: Increase timeout with `--isolated-timeout=600`
 
-**Missing output**: Enable capture for passed tests with `isolated_capture_passed = true`
+**Missing output**: Use `-s` or `--capture=no` to see output from passing tests, or `-v` for verbose output. pytest-isolated respects pytest's standard capture settings.
 
 **Subprocess crashes**: Check for segfaults, OOM, or signal issues. Run with `-v` for details.
 

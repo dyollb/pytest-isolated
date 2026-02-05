@@ -7,6 +7,31 @@ import pytest
 pytest_plugins = ["pytester"]
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "timeout_plugin_required: test requires pytest-timeout plugin to be installed",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Skip tests that require pytest-timeout if it's not installed."""
+    try:
+        import pytest_timeout  # noqa
+
+        timeout_available = True
+    except ImportError:
+        timeout_available = False
+
+    if not timeout_available:
+        skip_timeout = pytest.mark.skip(reason="pytest-timeout not installed")
+        for item in items:
+            if "timeout_plugin_required" in item.keywords:
+                item.add_marker(skip_timeout)
+
+
 class _SingletonApplication:
     """Mock singleton application for testing isolation.
 
