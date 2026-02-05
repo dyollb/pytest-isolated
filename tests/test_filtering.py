@@ -61,6 +61,9 @@ def test_k_filtering_with_isolated_and_normal_tests(pytester: Pytester):
     # Filter for tests with "match" in the name
     result = pytester.runpytest("-v", "-k", "match")
     result.assert_outcomes(passed=2)
+    # Verify filtered tests don't appear in output
+    assert "test_isolated_skip_this" not in result.stdout.str()
+    assert "test_normal_skip_this" not in result.stdout.str()
 
 
 def test_k_filtering_complex_expression(pytester: Pytester):

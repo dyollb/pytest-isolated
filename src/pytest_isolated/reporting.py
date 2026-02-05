@@ -121,7 +121,7 @@ def _emit_report(
     elif outcome == "failed" and longrepr:
         rep.longrepr = longrepr
 
-    # Always attach captured output to the report.
+    # Attach captured output to the report when present.
     # Pytest's reporting layer will decide whether to display it based on
     # test outcome, verbosity, and capture settings (--capture, -s, etc.)
     all_sections = list(sections) if sections else []

@@ -145,7 +145,7 @@ def test_capture_flag_s_disables_capture(pytester: Pytester):
 
 
 def test_capture_flag_forwarded_to_subprocess(pytester: Pytester):
-    """Test that --capture flag is forwarded to subprocess."""
+    """Test that --capture flag is forwarded and capture works in subprocess."""
     pytester.makepyfile(
         """
         import pytest
@@ -156,6 +156,8 @@ def test_capture_flag_forwarded_to_subprocess(pytester: Pytester):
         def test_check_capture_flag():
             # Write sys.argv to verify --capture was forwarded
             Path("subprocess_args.txt").write_text(str(sys.argv))
+            # Print output that should be captured
+            print("captured output")
             assert True
     """
     )
@@ -170,6 +172,8 @@ def test_capture_flag_forwarded_to_subprocess(pytester: Pytester):
     has_capture_sys = "--capture=sys" in args_content
     has_capture_and_sys = "--capture" in args_content and "sys" in args_content
     assert has_capture_sys or has_capture_and_sys
+    # Verify capture worked - output should NOT appear in test output for passed test
+    assert "captured output" not in result.stdout.str()
 
 
 def test_capture_output_behavior_failed_test(pytester: Pytester):
