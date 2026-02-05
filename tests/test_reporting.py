@@ -95,32 +95,120 @@ def test_junit_xml_output(pytester: Pytester):
     assert "test_fail" in content
 
 
-def test_capture_passed_config(pytester: Pytester):
-    """Test isolated_capture_passed configuration option."""
-    # Note: Currently output capture for passed tests requires using sections
-    # This test verifies the configuration is recognized without warnings
-    pytester.makeini(
-        """
-        [tool:pytest]
-        isolated_timeout = 300
-    """
-    )
-
+def test_capture_no_option_hides_passed_output(pytester: Pytester):
+    """Test that passed test output is hidden by default (pytest standard behavior)."""
     pytester.makepyfile(
         """
         import pytest
+        import sys
 
         @pytest.mark.isolated
         def test_pass():
-            print("This output is captured")
+            print("stdout from passing test")
+            print("stderr from passing test", file=sys.stderr)
             assert True
     """
     )
 
     result = pytester.runpytest("-v")
     result.assert_outcomes(passed=1)
-    # Configuration should be accepted without warnings about unknown options
-    assert "Unknown config option" not in result.stdout.str()
+    # Output from passing tests should NOT be shown by default
+    assert "stdout from passing test" not in result.stdout.str()
+    assert "stderr from passing test" not in result.stdout.str()
+
+
+def test_capture_flag_s_disables_capture(pytester: Pytester):
+    """Test that -s flag is forwarded to subprocess and disables capture."""
+    pytester.makepyfile(
+        """
+        import pytest
+        import sys
+        from pathlib import Path
+
+        @pytest.mark.isolated
+        def test_check_s_flag():
+            # Write sys.argv to a file so we can verify -s was forwarded
+            Path("subprocess_args.txt").write_text(str(sys.argv))
+            print("output with -s flag")
+            assert True
+    """
+    )
+
+    result = pytester.runpytest("-v", "-s")
+    result.assert_outcomes(passed=1)
+
+    # Verify -s flag was forwarded to subprocess
+    args_file = pytester.path / "subprocess_args.txt"
+    assert args_file.exists()
+    args_content = args_file.read_text()
+    assert "-s" in args_content
+
+
+def test_capture_flag_forwarded_to_subprocess(pytester: Pytester):
+    """Test that --capture flag is forwarded to subprocess."""
+    pytester.makepyfile(
+        """
+        import pytest
+        import sys
+        from pathlib import Path
+
+        @pytest.mark.isolated
+        def test_check_capture_flag():
+            # Write sys.argv to verify --capture was forwarded
+            Path("subprocess_args.txt").write_text(str(sys.argv))
+            assert True
+    """
+    )
+
+    result = pytester.runpytest("-v", "--capture=sys")
+    result.assert_outcomes(passed=1)
+
+    # Verify --capture=sys flag was forwarded to subprocess
+    args_file = pytester.path / "subprocess_args.txt"
+    assert args_file.exists()
+    args_content = args_file.read_text()
+    has_capture_sys = "--capture=sys" in args_content
+    has_capture_and_sys = "--capture" in args_content and "sys" in args_content
+    assert has_capture_sys or has_capture_and_sys
+
+
+def test_capture_output_behavior_failed_test(pytester: Pytester):
+    """Test that failed test output is shown regardless of capture mode."""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated
+        def test_fail():
+            print("output from failed test")
+            assert False, "intentional failure"
+    """
+    )
+
+    result = pytester.runpytest("-v")
+    result.assert_outcomes(failed=1)
+    # Failed test output should always be shown
+    assert "output from failed test" in result.stdout.str()
+
+
+def test_capture_output_behavior_passed_test_default(pytester: Pytester):
+    """Test that passed test output is hidden by default."""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated
+        def test_pass():
+            print("output from passed test")
+            assert True
+    """
+    )
+
+    result = pytester.runpytest("-v")
+    result.assert_outcomes(passed=1)
+    # Passed test output should NOT be shown with default capture
+    output = result.stdout.str()
+    assert "output from passed test" not in output
 
 
 def test_test_duration_tracking(pytester: Pytester):

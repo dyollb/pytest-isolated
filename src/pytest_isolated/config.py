@@ -38,7 +38,7 @@ _FORWARD_FLAGS: Final = {
 _FORWARD_OPTIONS_WITH_VALUE: Final = {
     "--tb",  # traceback style
     "-r",  # show extra test summary info
-    "--capture",  # capture method (fd/sys/no/tee-sys)
+    "--capture",  # output capture method (fd, sys, no, tee-sys)
 }
 
 
@@ -69,12 +69,6 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         type="string",
         default=str(DEFAULT_TIMEOUT),
         help="Default timeout in seconds for isolated test groups",
-    )
-    parser.addini(
-        "isolated_capture_passed",
-        type="bool",
-        default=False,
-        help="Capture output for passed tests (default: False)",
     )
 
 

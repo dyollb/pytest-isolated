@@ -100,7 +100,6 @@ def _emit_report(
     sections: list[tuple[str, str]] | None = None,
     user_properties: list[tuple[str, Any]] | None = None,
     wasxfail: bool = False,
-    capture_passed: bool = False,
 ) -> None:
     """Emit a test report for a specific test phase."""
     call = pytest.CallInfo.from_call(lambda: None, when=when)
@@ -122,15 +121,16 @@ def _emit_report(
     elif outcome == "failed" and longrepr:
         rep.longrepr = longrepr
 
-    # Add captured output as sections (capstdout/capstderr are read-only)
-    if outcome == "failed" or (outcome == "passed" and capture_passed):
-        all_sections = list(sections) if sections else []
-        if stdout:
-            all_sections.append(("Captured stdout call", stdout))
-        if stderr:
-            all_sections.append(("Captured stderr call", stderr))
-        if all_sections:
-            rep.sections = all_sections
+    # Always attach captured output to the report.
+    # Pytest's reporting layer will decide whether to display it based on
+    # test outcome, verbosity, and capture settings (--capture, -s, etc.)
+    all_sections = list(sections) if sections else []
+    if stdout:
+        all_sections.append(("Captured stdout call", stdout))
+    if stderr:
+        all_sections.append(("Captured stderr call", stderr))
+    if all_sections:
+        rep.sections = all_sections
 
     item.ihook.pytest_runtest_logreport(report=rep)
 
@@ -139,7 +139,6 @@ def _emit_failure_for_items(
     items: list[pytest.Item],
     error_message: str,
     session: pytest.Session,
-    capture_passed: bool = False,
 ) -> None:
     """Emit synthetic failure reports when subprocess execution fails.
 
@@ -154,7 +153,7 @@ def _emit_failure_for_items(
     """
     for it in items:
         xfail_marker = it.get_closest_marker("xfail")
-        _emit_report(it, when="setup", outcome="passed", capture_passed=capture_passed)
+        _emit_report(it, when="setup", outcome="passed")
         if xfail_marker:
             _emit_report(
                 it,
@@ -162,7 +161,6 @@ def _emit_failure_for_items(
                 outcome="skipped",
                 longrepr=error_message,
                 wasxfail=True,
-                capture_passed=capture_passed,
             )
         else:
             _emit_report(
@@ -170,9 +168,6 @@ def _emit_failure_for_items(
                 when="call",
                 outcome="failed",
                 longrepr=error_message,
-                capture_passed=capture_passed,
             )
             session.testsfailed += 1
-        _emit_report(
-            it, when="teardown", outcome="passed", capture_passed=capture_passed
-        )
+        _emit_report(it, when="teardown", outcome="passed")

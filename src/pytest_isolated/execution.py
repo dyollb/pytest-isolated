@@ -83,9 +83,6 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         int(timeout_ini) if timeout_ini else DEFAULT_TIMEOUT
     )
 
-    # Get capture configuration
-    capture_passed = config.getini("isolated_capture_passed")
-
     # Run groups
     for group_name, group_items in groups.items():
         nodeids = [it.nodeid for it in group_items]
@@ -160,22 +157,26 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         ):
             subprocess_cwd = str(config.invocation_params.dir)
 
+        # Check if capture is disabled (-s or --capture=no)
+        # If so, don't capture subprocess output to allow it to flow to terminal
+        capture_disabled = "-s" in forwarded_args or "--capture=no" in forwarded_args
+
         proc_stderr = b""
         try:
             proc = subprocess.run(
                 cmd,
                 env=env,
                 timeout=group_timeout,
-                capture_output=True,
+                capture_output=not capture_disabled,
                 check=False,
                 cwd=subprocess_cwd,
             )
             returncode = proc.returncode
-            proc_stderr = proc.stderr or b""
+            proc_stderr = proc.stderr or b"" if not capture_disabled else b""
             timed_out = False
         except subprocess.TimeoutExpired as exc:
             returncode = -1
-            proc_stderr = exc.stderr or b""
+            proc_stderr = exc.stderr or b"" if not capture_disabled else b""
             timed_out = True
 
         execution_time = time.time() - start_time
@@ -209,7 +210,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                     f"Subprocess crashed with signal {-returncode} "
                     f"(expected for xfail test)"
                 )
-                _emit_failure_for_items(group_items, msg, session, capture_passed)
+                _emit_failure_for_items(group_items, msg, session)
                 continue
 
         # Handle timeout
@@ -220,7 +221,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                 f"Increase timeout with --isolated-timeout, isolated_timeout ini, "
                 f"or @pytest.mark.isolated(timeout=N)."
             )
-            _emit_failure_for_items(group_items, msg, session, capture_passed)
+            _emit_failure_for_items(group_items, msg, session)
             continue
 
         # Handle crash during collection (no results produced)
@@ -233,7 +234,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
             )
             if stderr_text:
                 msg += f"\n\nSubprocess stderr:\n{stderr_text}"
-            _emit_failure_for_items(group_items, msg, session, capture_passed)
+            _emit_failure_for_items(group_items, msg, session)
             continue
 
         # Handle mid-test crash: detect tests with incomplete phases
@@ -280,14 +281,12 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                             outcome=rec["outcome"],
                             longrepr=rec.get("longrepr", ""),
                             duration=rec.get("duration", 0.0),
-                            capture_passed=capture_passed,
                         )
                     else:
                         _emit_report(
                             it,
                             when="setup",
                             outcome="passed",
-                            capture_passed=capture_passed,
                         )
 
                     # Emit call phase as failed with crash info
@@ -299,7 +298,6 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                             outcome="skipped",
                             longrepr=crash_msg,
                             wasxfail=True,
-                            capture_passed=capture_passed,
                         )
                     else:
                         _emit_report(
@@ -307,7 +305,6 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                             when="call",
                             outcome="failed",
                             longrepr=crash_msg,
-                            capture_passed=capture_passed,
                         )
                         session.testsfailed += 1
 
@@ -315,7 +312,6 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                         it,
                         when="teardown",
                         outcome="passed",
-                        capture_passed=capture_passed,
                     )
                     # Remove from results so they're not processed again
                     results.pop(it.nodeid, None)
@@ -326,9 +322,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                     returncode, "during earlier test execution", stderr_text
                 )
                 not_run_msg = f"Test did not run - {not_run_msg}"
-                _emit_failure_for_items(
-                    not_run_items, not_run_msg, session, capture_passed
-                )
+                _emit_failure_for_items(not_run_items, not_run_msg, session)
                 for it in not_run_items:
                     results.pop(it.nodeid, None)
 
@@ -362,7 +356,6 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                             when="call",
                             outcome="failed",
                             longrepr=msg,
-                            capture_passed=capture_passed,
                         )
                         session.testsfailed += 1
                     continue
@@ -376,7 +369,6 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                     duration=rec.get("duration", 0.0),
                     stdout=rec.get("stdout", ""),
                     stderr=rec.get("stderr", ""),
-                    capture_passed=capture_passed,
                     sections=rec.get("sections"),
                     user_properties=rec.get("user_properties"),
                     wasxfail=rec.get("wasxfail", False),
