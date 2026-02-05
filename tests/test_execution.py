@@ -3,6 +3,8 @@
 Tests subprocess management, crash detection, timeout handling, and execution flow.
 """
 
+import textwrap
+
 from pytest import Pytester
 
 
@@ -184,21 +186,21 @@ def test_subprocess_with_directory_argument(pytester: Pytester):
     # Create a tests subdirectory with isolated tests
     tests_dir = pytester.mkdir("tests")
     test_file = tests_dir / "test_isolated.py"
-    test_file.write_text("""
-import pytest
+    test_file.write_text(
+        textwrap.dedent(
+            """
+            import pytest
 
-@pytest.mark.isolated(group="1")
+            @pytest.mark.isolated(group="1")
+            def test_in_subdir_1():
+                assert True
 
-
-def test_in_subdir_1():
-    assert True
-
-@pytest.mark.isolated(group="2")
-
-
-def test_in_subdir_2():
-    assert True
-""")
+            @pytest.mark.isolated(group="2")
+            def test_in_subdir_2():
+                assert True
+            """
+        )
+    )
 
     # Run pytest with directory argument 'tests'
     # This should work - the subprocess should only get the nodeids, not 'tests'

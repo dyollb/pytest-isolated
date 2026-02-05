@@ -3,6 +3,8 @@
 Tests command-line options and plugin configuration.
 """
 
+import textwrap
+
 from pytest import Pytester
 
 
@@ -44,15 +46,17 @@ def test_subprocess_with_nested_directory_structure(pytester: Pytester):
     # Create tests in a subdirectory
     subdir = pytester.mkdir("tests")
     test_file = subdir / "test_nested.py"
-    test_file.write_text("""
-import pytest
+    test_file.write_text(
+        textwrap.dedent(
+            """
+            import pytest
 
-@pytest.mark.isolated
-
-
-def test_in_nested_dir():
-    assert True
-""")
+            @pytest.mark.isolated
+            def test_in_nested_dir():
+                assert True
+            """
+        )
+    )
 
     # Run pytest from the root, but specify the test file with relative path
     # This mimics the scenario where pytest runs from a parent directory
@@ -73,23 +77,29 @@ def test_subprocess_with_local_imports(pytester: Pytester):
     # Create a helper module in tests directory
     tests_dir = pytester.mkdir("tests")
     helper_file = tests_dir / "test_helpers.py"
-    helper_file.write_text("""
-def helper_function():
-    return "helper_result"
-""")
+    helper_file.write_text(
+        textwrap.dedent(
+            """
+            def helper_function():
+                return "helper_result"
+            """
+        )
+    )
 
     # Create test that imports from the helper
     test_file = tests_dir / "test_with_import.py"
-    test_file.write_text("""
-import pytest
-from test_helpers import helper_function
+    test_file.write_text(
+        textwrap.dedent(
+            """
+            import pytest
+            from test_helpers import helper_function
 
-@pytest.mark.isolated
-
-
-def test_using_helper():
-    assert helper_function() == "helper_result"
-""")
+            @pytest.mark.isolated
+            def test_using_helper():
+                assert helper_function() == "helper_result"
+            """
+        )
+    )
 
     # This is the key: run pytest with --rootdir pointing to tests/
     # This makes pytest collect the test as "test_with_import.py::test_using_helper"
