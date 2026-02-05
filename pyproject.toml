@@ -31,10 +31,11 @@ Issues = "https://github.com/dyollb/pytest-isolated/issues"
 
 [project.optional-dependencies]
 dev = [
-    "pre-commit",
     "build",
-    "ruff",
+    "mypy",
+    "pre-commit",
     "pytest-timeout",
+    "ruff",
 ]
 
 [project.entry-points.pytest11]
