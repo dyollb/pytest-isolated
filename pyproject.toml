@@ -34,8 +34,6 @@ dev = [
     "pre-commit",
     "build",
     "ruff",
-]
-test = [
     "pytest-timeout",
 ]
 
