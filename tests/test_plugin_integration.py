@@ -37,7 +37,7 @@ def test_timeout_plugin_integration_isolated(pytester: pytest.Pytester):
     """
     )
 
-    result = pytester.runpytest("-v")
+    result = pytester.runpytest_subprocess("-v")
     result.assert_outcomes(failed=2)
     stdout = result.stdout.str()
     # Verify pytest-timeout is reporting the timeouts
@@ -58,12 +58,12 @@ def test_timeout_plugin_integration_normal(pytester: pytest.Pytester):
         @pytest.mark.timeout(0.5)
         def test_normal_with_timeout():
             # Should timeout after 0.5 seconds
-            time.sleep(2)
+            time.sleep(5)
             assert True
     """
     )
 
-    result = pytester.runpytest("-v")
+    result = pytester.runpytest_subprocess("-v")
     result.assert_outcomes(failed=1)
     stdout = result.stdout.str()
     assert "timeout" in stdout.lower() or "timed out" in stdout.lower()
@@ -85,29 +85,29 @@ def test_timeout_plugin_integration_mixed(pytester: pytest.Pytester):
         @pytest.mark.isolated
         @pytest.mark.timeout(0.5)
         def test_isolated_times_out():
-            time.sleep(2)
+            time.sleep(5)
             assert True
 
         @pytest.mark.timeout(0.5)
         def test_normal_times_out():
-            time.sleep(2)
+            time.sleep(5)
             assert True
 
         @pytest.mark.isolated(group="grouped")
         @pytest.mark.timeout(0.5)
         def test_grouped_1_times_out():
-            time.sleep(2)
+            time.sleep(5)
             assert True
 
         @pytest.mark.isolated(group="grouped")
         @pytest.mark.timeout(0.5)
         def test_grouped_2_times_out():
-            time.sleep(2)
+            time.sleep(5)
             assert True
     """
     )
 
-    result = pytester.runpytest("-v")
+    result = pytester.runpytest_subprocess("-v")
     # All tests should timeout
     result.assert_outcomes(failed=4)
     stdout = result.stdout.str()
