@@ -40,6 +40,7 @@ class SubprocessResult(NamedTuple):
     """Result from running a subprocess."""
 
     returncode: int
+    stdout: bytes
     stderr: bytes
     timed_out: bool
 
@@ -86,25 +87,33 @@ def _run_subprocess(
     timeout: int,
     cwd: str | None,
 ) -> SubprocessResult:
-    """Run subprocess and return result."""
+    """Run subprocess and return result.
+
+    Uses Popen with communicate() to capture partial output on timeout.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=cwd,
+    )
     try:
-        proc = subprocess.run(
-            cmd,
-            env=env,
-            timeout=timeout,
-            capture_output=True,
-            check=False,
-            cwd=cwd,
-        )
+        stdout, stderr = proc.communicate(timeout=timeout)
         return SubprocessResult(
             returncode=proc.returncode,
-            stderr=proc.stderr or b"",
+            stdout=stdout or b"",
+            stderr=stderr or b"",
             timed_out=False,
         )
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
+        # Kill the process and collect any partial output
+        proc.kill()
+        stdout, stderr = proc.communicate()
         return SubprocessResult(
             returncode=-1,
-            stderr=exc.stderr or b"",
+            stdout=stdout or b"",
+            stderr=stderr or b"",
             timed_out=True,
         )
 
@@ -432,6 +441,8 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         env = os.environ.copy()
         env[SUBPROC_ENV] = "1"
         env[SUBPROC_REPORT_PATH] = report_path
+        # Disable Python output buffering so we capture partial output on timeout
+        env["PYTHONUNBUFFERED"] = "1"
 
         # Build forwarded args and subprocess command
         forwarded_args = _build_forwarded_args(config)
@@ -457,6 +468,11 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         start_time = time.time()
         result = _run_subprocess(cmd, env, group_timeout, subprocess_cwd)
         execution_time = time.time() - start_time
+
+        # Forward subprocess stdout to parent (so prints are visible)
+        if result.stdout:
+            sys.stdout.buffer.write(result.stdout)
+            sys.stdout.buffer.flush()
 
         # Parse results
         results = _parse_results(report_path)
