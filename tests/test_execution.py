@@ -156,6 +156,67 @@ def test_marker_timeout(pytester: Pytester):
     assert "timed out after 1" in result.stdout.str()
 
 
+def test_fixture_teardown_called_on_timeout(pytester: Pytester):
+    """Test that fixture teardown is called even when a test times out."""
+    pytester.makepyfile(
+        """
+        import pytest
+        import time
+
+        @pytest.fixture
+        def my_fixture():
+            print("FIXTURE_SETUP_COMPLETE")
+            yield "resource"
+            print("FIXTURE_TEARDOWN_CALLED")
+
+        @pytest.mark.isolated
+        def test_timeout_with_fixture(my_fixture):
+            print("TEST_STARTED")
+            time.sleep(10)
+    """
+    )
+
+    result = pytester.runpytest("-v", "-s", "--isolated-timeout=1")
+    result.assert_outcomes(failed=1)
+    stdout = result.stdout.str()
+    assert "timed out" in stdout
+    assert "FIXTURE_SETUP_COMPLETE" in stdout
+    assert "TEST_STARTED" in stdout
+    assert "FIXTURE_TEARDOWN_CALLED" in stdout
+
+
+def test_fixture_itself_times_out(pytester: Pytester):
+    """Test that fixture setup timeout is properly reported."""
+    pytester.makepyfile(
+        """
+        import pytest
+        import time
+
+        @pytest.fixture
+        def slow_fixture():
+            print("FIXTURE_SETUP_STARTING")
+            time.sleep(10)
+            print("FIXTURE_SETUP_COMPLETE")
+            yield "resource"
+            print("FIXTURE_TEARDOWN_CALLED")
+
+        @pytest.mark.isolated
+        def test_with_slow_fixture(slow_fixture):
+            print("TEST_BODY_REACHED")
+            assert True
+    """
+    )
+
+    result = pytester.runpytest("-v", "-s", "--isolated-timeout=1")
+    result.assert_outcomes(failed=1)
+    stdout = result.stdout.str()
+    assert "timed out" in stdout
+    assert "FIXTURE_SETUP_STARTING" in stdout
+    # These should NOT be in the output since the fixture times out during setup
+    assert "FIXTURE_SETUP_COMPLETE" not in stdout
+    assert "TEST_BODY_REACHED" not in stdout
+
+
 def test_no_infinite_recursion(pytester: Pytester):
     """Test that child processes don't spawn more subprocesses."""
     pytester.makepyfile(
