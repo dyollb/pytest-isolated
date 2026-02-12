@@ -445,8 +445,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         #
         cmd = [
             sys.executable,
-            "-u",  # Disable Python output buffering
-            # so we capture partial output on timeout
+            "-u",  # Disable buffering so we capture partial output on timeout
             "-m",
             "pytest",
         ]
