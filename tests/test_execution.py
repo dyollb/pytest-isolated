@@ -208,6 +208,85 @@ def test_subprocess_with_directory_argument(pytester: Pytester):
     result.assert_outcomes(passed=2)
 
 
+def test_timeout_captures_partial_output_from_test(pytester: Pytester):
+    """Test that partial output is captured when test body times out.
+
+    With PYTHONUNBUFFERED=1, output from fixture setup and test start should
+    be captured even when timeout kills the subprocess mid-execution.
+    Note: Fixture teardown does not run because the process is killed.
+    
+    Uses -s to disable output capturing so prints go to stdout, which we
+    then capture from the subprocess.
+    """
+    pytester.makepyfile(
+        """
+        import pytest
+        import time
+
+        @pytest.fixture
+        def my_fixture():
+            print("FIXTURE_SETUP_COMPLETE")
+            yield "resource"
+            print("FIXTURE_TEARDOWN_CALLED")
+
+        @pytest.mark.isolated
+        def test_timeout_with_fixture(my_fixture):
+            print("TEST_STARTED")
+            time.sleep(3)  # Will timeout
+    """
+    )
+
+    result = pytester.runpytest("-v", "-s", "--isolated-timeout=1")
+    result.assert_outcomes(failed=1)
+    stdout = result.stdout.str()
+    assert "timed out" in stdout
+    # Partial output should be captured before timeout
+    assert "FIXTURE_SETUP_COMPLETE" in stdout
+    assert "TEST_STARTED" in stdout
+    # Teardown won't appear - process was killed
+    assert "FIXTURE_TEARDOWN_CALLED" not in stdout
+
+
+def test_timeout_during_fixture_setup(pytester: Pytester):
+    """Test that timeout during fixture setup is properly reported.
+
+    When fixture setup itself times out, we should capture output up to
+    that point but not output from the test body (which never runs).
+    
+    Uses -s to disable output capturing so prints go to stdout, which we
+    then capture from the subprocess.
+    """
+    pytester.makepyfile(
+        """
+        import pytest
+        import time
+
+        @pytest.fixture
+        def slow_fixture():
+            print("FIXTURE_SETUP_STARTING")
+            time.sleep(3)  # Will timeout
+            print("FIXTURE_SETUP_COMPLETE")
+            yield "resource"
+            print("FIXTURE_TEARDOWN_CALLED")
+
+        @pytest.mark.isolated
+        def test_with_slow_fixture(slow_fixture):
+            print("TEST_BODY_REACHED")
+            assert True
+    """
+    )
+
+    result = pytester.runpytest("-v", "-s", "--isolated-timeout=1")
+    result.assert_outcomes(failed=1)
+    stdout = result.stdout.str()
+    assert "timed out" in stdout
+    # Should capture output before timeout in fixture
+    assert "FIXTURE_SETUP_STARTING" in stdout
+    # These should NOT appear - timeout occurred before reaching them
+    assert "FIXTURE_SETUP_COMPLETE" not in stdout
+    assert "TEST_BODY_REACHED" not in stdout
+
+
 def test_exitfirst_option(pytester: Pytester):
     """Test that -x/--exitfirst stops execution after first failure"""
     pytester.makepyfile(

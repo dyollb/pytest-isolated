@@ -40,6 +40,7 @@ class SubprocessResult(NamedTuple):
     """Result from running a subprocess."""
 
     returncode: int
+    stdout: bytes
     stderr: bytes
     timed_out: bool
 
@@ -98,12 +99,15 @@ def _run_subprocess(
         )
         return SubprocessResult(
             returncode=proc.returncode,
+            stdout=proc.stdout or b"",
             stderr=proc.stderr or b"",
             timed_out=False,
         )
     except subprocess.TimeoutExpired as exc:
+        # TimeoutExpired exception contains partial output captured before timeout
         return SubprocessResult(
             returncode=-1,
+            stdout=exc.stdout or b"",
             stderr=exc.stderr or b"",
             timed_out=True,
         )
@@ -435,7 +439,8 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
 
         # Build forwarded args and subprocess command
         forwarded_args = _build_forwarded_args(config)
-        cmd = [sys.executable, "-m", "pytest"]
+        # Use -u to force unbuffered output (so partial output is captured on timeout/crash)
+        cmd = [sys.executable, "-u", "-m", "pytest"]
         cmd.extend(forwarded_args)
 
         # Pass rootdir to subprocess to ensure it uses the same project root
@@ -457,6 +462,11 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         start_time = time.time()
         result = _run_subprocess(cmd, env, group_timeout, subprocess_cwd)
         execution_time = time.time() - start_time
+
+        # Forward subprocess stdout to parent (so prints are visible)
+        if result.stdout:
+            sys.stdout.buffer.write(result.stdout)
+            sys.stdout.buffer.flush()
 
         # Parse results
         results = _parse_results(report_path)
