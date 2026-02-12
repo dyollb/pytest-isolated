@@ -30,3 +30,8 @@ repos:
             - mdformat-gfm
             - mdformat_frontmatter
           exclude: CHANGELOG.md
+
+    - repo: https://github.com/rhysd/actionlint
+      rev: v1.7.5
+      hooks:
+        - id: actionlint
