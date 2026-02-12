@@ -276,6 +276,134 @@ def test_subprocess_with_directory_argument(pytester: Pytester):
     result.assert_outcomes(passed=2)
 
 
+def test_timeout_captures_partial_output_from_test(pytester: Pytester):
+    """Test that partial output is captured when test body times out.
+
+    With PYTHONUNBUFFERED=1, output from fixture setup and test start should
+    be captured even when timeout kills the subprocess mid-execution.
+    Note: Fixture teardown does not run because the process is killed.
+
+    Uses -s to disable output capturing so prints go to stdout, which we
+    then capture from the subprocess.
+    """
+    pytester.makepyfile(
+        """
+        import pytest
+        import time
+
+        @pytest.fixture
+        def my_fixture():
+            print("FIXTURE_SETUP_COMPLETE")
+            yield "resource"
+            print("FIXTURE_TEARDOWN_CALLED")
+
+        @pytest.mark.isolated
+        def test_timeout_with_fixture(my_fixture):
+            print("TEST_STARTED")
+            time.sleep(3)  # Will timeout
+    """
+    )
+
+    result = pytester.runpytest("-v", "-s", "--isolated-timeout=1")
+    result.assert_outcomes(failed=1)
+    stdout = result.stdout.str()
+    assert "timed out" in stdout
+    # Partial output should be captured before timeout
+    assert "FIXTURE_SETUP_COMPLETE" in stdout
+    assert "TEST_STARTED" in stdout
+    # Teardown won't appear - process was killed
+    assert "FIXTURE_TEARDOWN_CALLED" not in stdout
+
+
+def test_timeout_during_fixture_setup(pytester: Pytester):
+    """Test that timeout during fixture setup is properly reported.
+
+    When fixture setup itself times out, we should capture output up to
+    that point but not output from the test body (which never runs).
+
+    Uses -s to disable output capturing so prints go to stdout, which we
+    then capture from the subprocess.
+    """
+    pytester.makepyfile(
+        """
+        import pytest
+        import time
+
+        @pytest.fixture
+        def slow_fixture():
+            print("FIXTURE_SETUP_STARTING")
+            time.sleep(3)  # Will timeout
+            print("FIXTURE_SETUP_COMPLETE")
+            yield "resource"
+            print("FIXTURE_TEARDOWN_CALLED")
+
+        @pytest.mark.isolated
+        def test_with_slow_fixture(slow_fixture):
+            print("TEST_BODY_REACHED")
+            assert True
+    """
+    )
+
+    result = pytester.runpytest("-v", "-s", "--isolated-timeout=1")
+    result.assert_outcomes(failed=1)
+    stdout = result.stdout.str()
+    assert "timed out" in stdout
+    # Should capture output before timeout in fixture
+    assert "FIXTURE_SETUP_STARTING" in stdout
+    # These should NOT appear - timeout occurred before reaching them
+    assert "FIXTURE_SETUP_COMPLETE" not in stdout
+    assert "TEST_BODY_REACHED" not in stdout
+
+
+def test_timeout_partial_output_in_junit_xml(pytester: Pytester):
+    """Test that partial output is captured in JUnit XML when timeout occurs.
+
+    When a test times out, any output printed before the timeout should be
+    included in the JUnit XML report in the <system-out> and <system-err> sections.
+    This ensures CI systems and test reporters can see what happened before the timeout.
+    """
+    pytester.makepyfile(
+        """
+        import pytest
+        import sys
+        import time
+
+        @pytest.mark.isolated(timeout=1)
+        def test_timeout_with_output():
+            print("STDOUT_BEFORE_TIMEOUT")
+            print("STDERR_BEFORE_TIMEOUT", file=sys.stderr)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            time.sleep(3)  # Will timeout
+            print("STDOUT_AFTER_TIMEOUT")  # Never reached
+    """
+    )
+
+    result = pytester.runpytest("-v", "--junitxml=junit.xml", "-o", "junit_logging=all")
+    result.assert_outcomes(failed=1)
+
+    # Verify junit xml file was created
+    junit_xml = pytester.path / "junit.xml"
+    assert junit_xml.exists()
+
+    # Read and validate the xml content
+    xml_content = junit_xml.read_text()
+
+    # Should contain the timeout failure message
+    assert "timed out" in xml_content
+
+    # Should contain the partial output in system-out section
+    assert "STDOUT_BEFORE_TIMEOUT" in xml_content
+    assert "<system-out>" in xml_content
+
+    # Should contain the partial output in system-err section
+    assert "STDERR_BEFORE_TIMEOUT" in xml_content
+    assert "<system-err>" in xml_content
+
+    # Output after timeout should NOT be present
+    assert "STDOUT_AFTER_TIMEOUT" not in xml_content
+
+
 def test_exitfirst_option(pytester: Pytester):
     """Test that -x/--exitfirst stops execution after first failure"""
     pytester.makepyfile(
