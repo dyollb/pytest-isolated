@@ -14,6 +14,7 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12"]
@@ -52,15 +53,16 @@ jobs:
             const title = `Scheduled tests failed on ${new Date().toISOString().split('T')[0]}`;
             const body = `The scheduled tests workflow has failed. Please check the [workflow run](${context.payload.repository.html_url}/actions/runs/${context.runId}) for details.`;
 
-            // Check if an issue already exists
+            // Check if an issue already exists (exclude pull requests)
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
               labels: 'scheduled-test-failure'
             });
+            const existingIssues = issues.data.filter(issue => !issue.pull_request);
 
-            if (issues.data.length === 0) {
+            if (existingIssues.length === 0) {
               await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
