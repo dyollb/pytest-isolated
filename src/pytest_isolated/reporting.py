@@ -139,6 +139,8 @@ def _emit_failure_for_items(
     items: list[pytest.Item],
     error_message: str,
     session: pytest.Session,
+    stdout: str = "",
+    stderr: str = "",
 ) -> None:
     """Emit synthetic failure reports when subprocess execution fails.
 
@@ -150,10 +152,15 @@ def _emit_failure_for_items(
 
     For xfail tests, call is reported as skipped with wasxfail=True to maintain
     proper xfail semantics.
+
+    The captured output (stdout/stderr) is attached to all three phases (setup,
+    call, teardown) to ensure pytest's junit plugin correctly includes it in the
+    XML report. Some junit plugins aggregate output across all phases, and having
+    empty output in later phases can clear the captured output from earlier phases.
     """
     for it in items:
         xfail_marker = it.get_closest_marker("xfail")
-        _emit_report(it, when="setup", outcome="passed")
+        _emit_report(it, when="setup", outcome="passed", stdout=stdout, stderr=stderr)
         if xfail_marker:
             _emit_report(
                 it,
@@ -161,6 +168,8 @@ def _emit_failure_for_items(
                 outcome="skipped",
                 longrepr=error_message,
                 wasxfail=True,
+                stdout=stdout,
+                stderr=stderr,
             )
         else:
             _emit_report(
@@ -168,6 +177,10 @@ def _emit_failure_for_items(
                 when="call",
                 outcome="failed",
                 longrepr=error_message,
+                stdout=stdout,
+                stderr=stderr,
             )
             session.testsfailed += 1
-        _emit_report(it, when="teardown", outcome="passed")
+        _emit_report(
+            it, when="teardown", outcome="passed", stdout=stdout, stderr=stderr
+        )
