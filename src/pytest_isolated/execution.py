@@ -87,33 +87,28 @@ def _run_subprocess(
     timeout: int,
     cwd: str | None,
 ) -> SubprocessResult:
-    """Run subprocess and return result.
-
-    Uses Popen with communicate() to capture partial output on timeout.
-    """
-    proc = subprocess.Popen(
-        cmd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=cwd,
-    )
+    """Run subprocess and return result."""
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        proc = subprocess.run(
+            cmd,
+            env=env,
+            timeout=timeout,
+            capture_output=True,
+            check=False,
+            cwd=cwd,
+        )
         return SubprocessResult(
             returncode=proc.returncode,
-            stdout=stdout or b"",
-            stderr=stderr or b"",
+            stdout=proc.stdout or b"",
+            stderr=proc.stderr or b"",
             timed_out=False,
         )
-    except subprocess.TimeoutExpired:
-        # Kill the process and collect any partial output
-        proc.kill()
-        stdout, stderr = proc.communicate()
+    except subprocess.TimeoutExpired as exc:
+        # TimeoutExpired exception contains partial output captured before timeout
         return SubprocessResult(
             returncode=-1,
-            stdout=stdout or b"",
-            stderr=stderr or b"",
+            stdout=exc.stdout or b"",
+            stderr=exc.stderr or b"",
             timed_out=True,
         )
 
@@ -441,12 +436,23 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         env = os.environ.copy()
         env[SUBPROC_ENV] = "1"
         env[SUBPROC_REPORT_PATH] = report_path
-        # Disable Python output buffering so we capture partial output on timeout
-        env["PYTHONUNBUFFERED"] = "1"
+
+        # Python CLI
+        #
+        # -m mod : run library module as a script (terminates option list
+        # -u     : force the stdout and stderr streams to be unbuffered;
+        #         this option has no effect on stdin; also PYTHONUNBUFFERED=x
+        #
+        cmd = [
+            sys.executable,
+            "-u",  # Disable Python output buffering
+            # so we capture partial output on timeout
+            "-m",
+            "pytest",
+        ]
 
         # Build forwarded args and subprocess command
         forwarded_args = _build_forwarded_args(config)
-        cmd = [sys.executable, "-m", "pytest"]
         cmd.extend(forwarded_args)
 
         # Pass rootdir to subprocess to ensure it uses the same project root
