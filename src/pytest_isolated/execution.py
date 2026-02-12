@@ -451,13 +451,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         # This allows the parent to capture partial output on timeout/crash
         # while still maintaining pytest's normal capture behavior for
         # completed tests
-        cmd = [
-            sys.executable,
-            "-u",
-            "-m",
-            "pytest",
-            "--capture=tee-sys",
-        ]
+        cmd = [sys.executable, "-u", "-m", "pytest", "--capture=tee-sys"]
         cmd.extend(forwarded_args)
 
         # Pass rootdir to subprocess to ensure it uses the same project root
