@@ -156,11 +156,12 @@ def test_marker_timeout(pytester: Pytester):
     assert "timed out after 1" in result.stdout.str()
 
 
-def test_fixture_teardown_called_on_timeout(pytester: Pytester):
+def test_fixture_setup_and_test_output_captured_on_timeout(pytester: Pytester):
     """Test that fixture setup and test start are captured even when test times out.
 
     Note: When a test times out, the subprocess is killed and fixture teardown
-    does not run. This test verifies that output before the timeout is captured.
+    does not run. This test verifies that output before the timeout is captured,
+    and that teardown output is absent (since the process is terminated).
     """
     pytester.makepyfile(
         """
@@ -184,9 +185,11 @@ def test_fixture_teardown_called_on_timeout(pytester: Pytester):
     result.assert_outcomes(failed=1)
     stdout = result.stdout.str()
     assert "timed out" in stdout
+    # Output before timeout should be captured
     assert "FIXTURE_SETUP_COMPLETE" in stdout
     assert "TEST_STARTED" in stdout
     # Teardown won't run because the process is killed on timeout
+    assert "FIXTURE_TEARDOWN_CALLED" not in stdout
 
 
 def test_fixture_itself_times_out(pytester: Pytester):

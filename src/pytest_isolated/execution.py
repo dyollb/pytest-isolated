@@ -477,8 +477,19 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
 
         # Forward subprocess stdout to parent (so prints are visible)
         if result.stdout:
-            sys.stdout.buffer.write(result.stdout)
-            sys.stdout.buffer.flush()
+            # NOTE: In some pytest environments (or when output is redirected),
+            # sys.stdout may be a text-only stream (or a custom object)
+            # without .buffer,
+
+            stdout_buffer = getattr(sys.stdout, "buffer", None)
+            if stdout_buffer is not None:
+                stdout_buffer.write(result.stdout)
+                stdout_buffer.flush()
+            else:
+                # Fallback for text-only or custom stdout streams without .buffer
+                encoding = getattr(sys.stdout, "encoding", "utf-8") or "utf-8"
+                sys.stdout.write(result.stdout.decode(encoding, errors="replace"))
+                sys.stdout.flush()
 
         # Parse results
         results = _parse_results(report_path)
