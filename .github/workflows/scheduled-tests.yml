@@ -16,8 +16,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Base: Python 3.11 on all platforms
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11"]
+        # Add Python 3.12-3.14 only for Ubuntu
+        include:
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: ubuntu-latest
+            python-version: "3.14"
 
     steps:
       - uses: actions/checkout@v6

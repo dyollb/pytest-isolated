@@ -2,8 +2,59 @@
 
 [![Tests](https://github.com/dyollb/pytest-isolated/actions/workflows/test.yml/badge.svg)](https://github.com/dyollb/pytest-isolated/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/pytest-isolated.svg)](https://pypi.org/project/pytest-isolated/)
+[![Python Version](https://img.shields.io/pypi/pyversions/pytest-isolated.svg)](https://pypi.org/project/pytest-isolated/)
+[![Downloads](https://static.pepy.tech/badge/pytest-isolated/month)](https://pepy.tech/project/pytest-isolated)
+[![License](https://img.shields.io/pypi/l/pytest-isolated.svg)](https://github.com/dyollb/pytest-isolated/blob/main/LICENSE)
+[![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey.svg)](https://github.com/dyollb/pytest-isolated)
 
 A cross-platform pytest plugin that runs marked tests in isolated subprocesses with intelligent grouping.
+
+## Why pytest-isolated?
+
+Ever had a test that passes alone but fails in the suite? Or tests that mysteriously hang on CI? pytest-isolated solves this by running tests in completely isolated subprocesses.
+
+**Common problems it solves:**
+
+- ✅ Segfaults and crashes don't kill your entire test suite
+- ✅ Tests modifying global state don't affect each other
+- ✅ Hanging tests timeout without blocking other tests
+- ✅ C extension crashes are contained
+- ✅ Resource leaks are isolated per test
+
+## Cheatsheet for pytest-forked users
+
+This plugin is inspired by [pytest-forked](https://github.com/pytest-dev/pytest-forked). See [pytest-forked migration guide](docs/pytest-forked-migration.md) for a quick reference comparing features.
+
+## Quick Start
+
+**1. Install:**
+
+```bash
+pip install pytest-isolated
+```
+
+**2. Mark a flaky test:**
+
+```py
+# Example 1: Simple isolation
+@pytest.mark.isolated
+def test_with_clean_state():
+    import os
+    os.environ["DEBUG"] = "true"
+    # Other tests won't see this change
+
+# Example 2: Crash protection
+@pytest.mark.isolated
+def test_that_crashes():
+    import ctypes
+    ctypes.string_at(0)  # Crash is contained!
+```
+
+**3. Run pytest normally:**
+
+```bash
+pytest  # Crash is isolated, suite continues
+```
 
 ## Features
 
@@ -15,17 +66,7 @@ A cross-platform pytest plugin that runs marked tests in isolated subprocesses w
 - Configurable timeouts to prevent hanging subprocesses
 - Cross-platform: Linux, macOS, Windows
 
-## Cheatsheet for pytest-forked users
-
-This plugin is inspired by [pytest-forked](https://github.com/pytest-dev/pytest-forked). See [pytest-forked migration guide](docs/pytest-forked-migration.md) for a quick reference comparing features.
-
-## Installation
-
-```bash
-pip install pytest-isolated
-```
-
-## Quick Start
+## Basic Usage
 
 Mark tests to run in isolated subprocesses:
 
@@ -136,9 +177,11 @@ Or in `pyproject.toml`:
 isolated_timeout = "300"
 ```
 
-## Use Cases
+## Real-World Use Cases
 
-### Testing Global State
+### 🌍 Isolating Global State
+
+Prevent environment variable and configuration changes from leaking between tests:
 
 ```python
 @pytest.mark.isolated
@@ -150,10 +193,12 @@ def test_modifies_environ():
 @pytest.mark.isolated
 def test_clean_environ():
     import os
-    assert "MY_VAR" not in os.environ
+    assert "MY_VAR" not in os.environ  # Fresh environment
 ```
 
-### Testing Singletons
+### 🔄 Testing Singletons
+
+Group tests that share singleton state, or isolate them completely:
 
 ```python
 @pytest.mark.isolated(group="singleton_tests")
@@ -168,14 +213,45 @@ def test_singleton_reuse():
     # Same instance as previous test in group
 ```
 
-### Testing Process Resources
+### ⚙️ Testing Process Resources
+
+Safely modify signal handlers and other process-level settings:
 
 ```python
 @pytest.mark.isolated
 def test_signal_handlers():
     import signal
     signal.signal(signal.SIGTERM, custom_handler)
-    # Won't interfere with pytest
+    # Won't interfere with pytest or other tests
+```
+
+### 💾 Testing Database Migrations
+
+Group expensive operations while maintaining isolation from other tests:
+
+```python
+@pytest.mark.isolated(group="database")
+class TestDatabase:
+    def test_migration(self):
+        db.migrate()  # Expensive operation, runs once
+
+    def test_query(self):
+        # Reuses same DB from test_migration
+        result = db.query("SELECT 1")
+        assert result == [(1,)]
+```
+
+### 🔧 Testing C Extensions
+
+Isolate tests that might crash from C code:
+
+```python
+@pytest.mark.isolated
+def test_numpy_operation():
+    import numpy as np
+    # If this segfaults, other tests still run
+    result = np.array([1, 2, 3])
+    assert len(result) == 3
 ```
 
 ## Output and Reporting
@@ -201,7 +277,7 @@ pytest --junitxml=report.xml --durations=10
 
 **Debugging**: Use `--no-isolation` to run all tests in the main process for easier debugging with `pdb` or IDE debuggers.
 
-**Performance**: Subprocess creation adds ~100-500ms per group. Group related tests to minimize overhead.
+**Performance**: Subprocess creation adds ~100-500ms per group. Group related tests to minimize overhead. Only mark tests that need isolation.
 
 ## Advanced
 
