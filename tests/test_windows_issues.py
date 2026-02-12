@@ -544,109 +544,139 @@ def test_app_state_isolation_despite_no_teardown(pytester: Pytester):
 
 
 def test_segmentation_fault_isolation(pytester: Pytester):
-    """Test that segmentation faults in one test don't affect others.
+    """Test that segmentation faults in fixture setup don't affect other tests.
 
-    Critical for Windows CI where hard crashes via ctypes.string_at(0)
-    or similar operations should be caught and isolated.
+    Critical for Windows CI: if a fixture crashes during setup with segfault,
+    subsequent tests should still run in fresh processes.
     """
     pytester.makepyfile(
-        test_file="""
+        conftest="""
         import pytest
         import ctypes
 
-        @pytest.mark.isolated
-        def test_will_segfault():
-            '''This test will cause a segmentation fault'''
-            print("About to cause segfault...")
-            ctypes.string_at(0)  # Reading memory at address 0 causes segfault
-            print("This line should never execute")
+        @pytest.fixture
+        def crashing_fixture(request):
+            '''Fixture that crashes during setup for specific test'''
+            if request.node.name == "test_with_segfault_in_fixture":
+                print("Fixture: About to cause segfault during setup...")
+                ctypes.string_at(0)  # Segfault in fixture setup
+            return "fixture_data"
+        """,
+        test_file="""
+        import pytest
 
         @pytest.mark.isolated
-        def test_should_still_run_after_segfault():
-            '''This test should run successfully despite previous segfault'''
-            print("Running after segfault test")
-            assert True
-        """
+        def test_with_segfault_in_fixture(crashing_fixture):
+            '''This test's fixture will crash during setup'''
+            print("Test body - should never execute")
+            assert False, "Should never reach here due to fixture crash"
+
+        @pytest.mark.isolated
+        def test_should_still_run_after_fixture_segfault(crashing_fixture):
+            '''This test should run successfully despite previous fixture segfault'''
+            print("Running after fixture segfault")
+            assert crashing_fixture == "fixture_data"
+        """,
     )
 
     result = pytester.runpytest("-v")
     stdout = result.stdout.str()
 
-    # First test should fail due to segfault
-    assert "test_will_segfault" in stdout
+    # First test should fail due to fixture segfault
+    assert "test_with_segfault_in_fixture" in stdout
 
     # Second test should still run and pass
-    assert "test_should_still_run_after_segfault" in stdout
+    assert "test_should_still_run_after_fixture_segfault" in stdout
     assert "PASSED" in stdout or "passed" in stdout
 
 
 def test_os_abort_isolation(pytester: Pytester):
-    """Test that os.abort() in one test doesn't crash the entire test suite.
+    """Test that os.abort() in fixture setup doesn't crash the entire test suite.
 
     os.abort() causes immediate abnormal termination without cleanup.
-    This is critical to handle on Windows CI.
+    This is critical to handle on Windows CI when it happens during fixture setup.
     """
     pytester.makepyfile(
-        test_file="""
+        conftest="""
         import pytest
         import os
 
-        @pytest.mark.isolated
-        def test_will_abort():
-            '''This test will call os.abort()'''
-            print("About to abort...")
-            os.abort()
-            print("This line should never execute")
+        @pytest.fixture
+        def aborting_fixture(request):
+            '''Fixture that calls os.abort() during setup for specific test'''
+            if request.node.name == "test_with_abort_in_fixture":
+                print("Fixture: About to call os.abort() during setup...")
+                os.abort()  # Abnormal termination in fixture setup
+            return "fixture_data"
+        """,
+        test_file="""
+        import pytest
 
         @pytest.mark.isolated
-        def test_should_still_run_after_abort():
-            '''This test should run successfully despite previous abort'''
-            print("Running after abort test")
-            assert True
-        """
+        def test_with_abort_in_fixture(aborting_fixture):
+            '''This test's fixture will abort during setup'''
+            print("Test body - should never execute")
+            assert False, "Should never reach here due to fixture abort"
+
+        @pytest.mark.isolated
+        def test_should_still_run_after_fixture_abort(aborting_fixture):
+            '''This test should run successfully despite previous fixture abort'''
+            print("Running after fixture abort")
+            assert aborting_fixture == "fixture_data"
+        """,
     )
 
     result = pytester.runpytest("-v")
     stdout = result.stdout.str()
 
-    # First test should fail due to abort
-    assert "test_will_abort" in stdout
+    # First test should fail due to fixture abort
+    assert "test_with_abort_in_fixture" in stdout
 
     # Second test should still run and pass
-    assert "test_should_still_run_after_abort" in stdout
+    assert "test_should_still_run_after_fixture_abort" in stdout
     assert "PASSED" in stdout or "passed" in stdout
 
 
 def test_parametrized_segfault_isolation(pytester: Pytester):
-    """Test segfault in one parametrized instance doesn't affect others.
+    """Test segfault in fixture for one parametrized instance doesn't affect others.
 
-    Combines parametrization with hard crashes - a common scenario
-    when testing with different data that might trigger edge cases.
+    Combines parametrization with fixture crashes - a common scenario
+    when fixture initialization crashes for specific parameter values.
     """
     pytester.makepyfile(
-        test_file="""
+        conftest="""
         import pytest
         import ctypes
 
+        @pytest.fixture
+        def param_fixture(request):
+            '''Fixture that crashes for specific parameter value'''
+            # Get the parameter value from the test
+            value = request.node.callspec.params['value']
+            print(f"Fixture: Setting up for value={value}")
+            if value == 2:
+                print("Fixture: Triggering segfault for value=2")
+                ctypes.string_at(0)  # Segfault in fixture for param 2
+            return f"data_for_{value}"
+        """,
+        test_file="""
+        import pytest
+
         @pytest.mark.parametrize("value", [1, 2, 3])
         @pytest.mark.isolated
-        def test_parametrized_with_potential_segfault(value):
-            print(f"Running with value={value}")
-            if value == 2:
-                # Only the second instance will segfault
-                print("Triggering segfault for value=2")
-                ctypes.string_at(0)
+        def test_parametrized_with_fixture_segfault(value, param_fixture):
+            print(f"Test body: value={value}, fixture={param_fixture}")
             assert value in [1, 2, 3]
-        """
+        """,
     )
 
     result = pytester.runpytest("-v")
     stdout = result.stdout.str()
 
     # All three instances should be attempted
-    assert "test_parametrized_with_potential_segfault[1]" in stdout
-    assert "test_parametrized_with_potential_segfault[2]" in stdout
-    assert "test_parametrized_with_potential_segfault[3]" in stdout
+    assert "test_parametrized_with_fixture_segfault[1]" in stdout
+    assert "test_parametrized_with_fixture_segfault[2]" in stdout
+    assert "test_parametrized_with_fixture_segfault[3]" in stdout
 
     # Instances 1 and 3 should pass despite instance 2 segfaulting
     # At least one should pass
@@ -654,53 +684,76 @@ def test_parametrized_segfault_isolation(pytester: Pytester):
 
 
 def test_combined_crash_types_isolation(pytester: Pytester):
-    """Test multiple types of crashes don't prevent subsequent tests.
+    """Test multiple types of fixture crashes don't prevent subsequent tests.
 
-    Simulates a comprehensive test suite with various failure modes:
+    Simulates a comprehensive test suite with various failure modes in fixtures:
     - Normal pass
-    - Segmentation fault
-    - os.abort()
-    - Exception
-    - Timeout
+    - Segmentation fault in fixture
+    - os.abort() in fixture
+    - Exception in fixture
+    - Timeout in fixture
     - Final pass to verify recovery
     """
     pytester.makepyfile(
-        test_file="""
+        conftest="""
         import pytest
         import ctypes
         import os
         import time
 
+        @pytest.fixture
+        def crash_fixture(request):
+            '''Fixture that crashes in different ways based on test name'''
+            test_name = request.node.name
+
+            if "segfault" in test_name:
+                print("Fixture: About to segfault")
+                ctypes.string_at(0)
+            elif "abort" in test_name:
+                print("Fixture: About to abort")
+                os.abort()
+            elif "exception" in test_name:
+                print("Fixture: About to raise exception")
+                raise RuntimeError("Intentional fixture error")
+            elif "timeout" in test_name:
+                print("Fixture: About to timeout")
+                time.sleep(10)
+
+            return "fixture_data"
+        """,
+        test_file="""
+        import pytest
+
         @pytest.mark.isolated
-        def test_01_normal_pass():
+        def test_01_normal_pass(crash_fixture):
             print("Test 1: Normal execution")
-            assert True
+            assert crash_fixture == "fixture_data"
 
         @pytest.mark.isolated
-        def test_02_segfault():
-            print("Test 2: About to segfault")
-            ctypes.string_at(0)
+        def test_02_segfault_in_fixture(crash_fixture):
+            print("Test 2: Should not execute due to fixture segfault")
+            assert False
 
         @pytest.mark.isolated
-        def test_03_abort():
-            print("Test 3: About to abort")
-            os.abort()
+        def test_03_abort_in_fixture(crash_fixture):
+            print("Test 3: Should not execute due to fixture abort")
+            assert False
 
         @pytest.mark.isolated
-        def test_04_exception():
-            print("Test 4: Raising exception")
-            raise RuntimeError("Intentional error")
+        def test_04_exception_in_fixture(crash_fixture):
+            print("Test 4: Should not execute due to fixture exception")
+            assert False
 
         @pytest.mark.isolated(timeout=2)
-        def test_05_timeout():
-            print("Test 5: About to timeout")
-            time.sleep(10)
+        def test_05_timeout_in_fixture(crash_fixture):
+            print("Test 5: Should not execute due to fixture timeout")
+            assert False
 
         @pytest.mark.isolated
-        def test_06_recovery_pass():
+        def test_06_recovery_pass(crash_fixture):
             print("Test 6: Should still run after all failures")
-            assert True
-        """
+            assert crash_fixture == "fixture_data"
+        """,
     )
 
     result = pytester.runpytest("-v")
@@ -708,10 +761,10 @@ def test_combined_crash_types_isolation(pytester: Pytester):
 
     # All tests should be attempted
     assert "test_01_normal_pass" in stdout
-    assert "test_02_segfault" in stdout
-    assert "test_03_abort" in stdout
-    assert "test_04_exception" in stdout
-    assert "test_05_timeout" in stdout
+    assert "test_02_segfault_in_fixture" in stdout
+    assert "test_03_abort_in_fixture" in stdout
+    assert "test_04_exception_in_fixture" in stdout
+    assert "test_05_timeout_in_fixture" in stdout
     assert "test_06_recovery_pass" in stdout
 
     # At least the normal tests should pass
