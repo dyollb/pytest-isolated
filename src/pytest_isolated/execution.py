@@ -441,21 +441,9 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         env[SUBPROC_ENV] = "1"
         env[SUBPROC_REPORT_PATH] = report_path
 
-        # Python CLI
-        #
-        # -m mod : run library module as a script (terminates option list
-        # -u     : force the stdout and stderr streams to be unbuffered;
-        #         this option has no effect on stdin; also PYTHONUNBUFFERED=x
-        #
-        cmd = [
-            sys.executable,
-            "-u",  # Disable buffering so we capture partial output on timeout
-            "-m",
-            "pytest",
-        ]
-
         # Build forwarded args and subprocess command
         forwarded_args = _build_forwarded_args(config)
+
         # Use -u to force unbuffered output (so partial output is captured
         # on timeout/crash)
         # Use --capture=tee-sys to duplicate output to both pytest's capture
@@ -463,7 +451,13 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         # This allows the parent to capture partial output on timeout/crash
         # while still maintaining pytest's normal capture behavior for
         # completed tests
-        cmd = [sys.executable, "-u", "-m", "pytest", "--capture=tee-sys"]
+        cmd = [
+            sys.executable,
+            "-u",
+            "-m",
+            "pytest",
+            "--capture=tee-sys",
+        ]
         cmd.extend(forwarded_args)
 
         # Pass rootdir to subprocess to ensure it uses the same project root
