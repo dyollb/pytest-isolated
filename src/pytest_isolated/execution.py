@@ -445,23 +445,10 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         forwarded_args = _build_forwarded_args(config)
 
         # Determine child's capture mode
-        # -s is forwarded if user specified it (in _FORWARD_FLAGS)
-        # --capture is NOT forwarded (removed from _FORWARD_OPTIONS_WITH_VALUE)
-        # Check original args for --capture=no in both forms
-        original_args = config.invocation_params.args
-        user_wants_no_capture = "-s" in forwarded_args
-
-        for i, arg in enumerate(original_args):
-            if arg == "--capture=no":
-                user_wants_no_capture = True
-                break
-            if (
-                arg == "--capture"
-                and i + 1 < len(original_args)
-                and original_args[i + 1] == "no"
-            ):
-                user_wants_no_capture = True
-                break
+        # Check if user wants no capture via -s or --capture=no
+        # Note: Both -s and --capture=no result in capture mode "no"
+        capture_mode = config.getoption("capture", "fd")
+        user_wants_no_capture = capture_mode == "no"
 
         # Build subprocess command
         # Use -u to force unbuffered output (so partial output is available
