@@ -448,7 +448,6 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         # Check if user wants no capture via -s or --capture=no
         # Note: Both -s and --capture=no result in capture mode "no"
         capture_mode = config.getoption("capture", "fd")
-        user_wants_no_capture = capture_mode == "no"
 
         # Build subprocess command
         # Use -u to force unbuffered output (so partial output is available
@@ -460,7 +459,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         # The parent's --capture setting (not forwarded) controls what the user sees.
         # Exception: if user wants no capture (-s or --capture=no), respect that.
         cmd = [sys.executable, "-u", "-m", "pytest"]
-        if user_wants_no_capture:
+        if capture_mode == "no":
             # User wants no capture via -s or --capture=no
             # Add -s if not already present (it may be in forwarded_args)
             if "-s" not in forwarded_args:
