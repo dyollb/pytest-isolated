@@ -3,6 +3,7 @@
 Tests output capture, JUnit XML reporting, and test result handling.
 """
 
+import pytest
 from pytest import Pytester
 
 
@@ -145,7 +146,12 @@ def test_capture_flag_s_disables_capture(pytester: Pytester):
 
 
 def test_capture_flag_forwarded_to_subprocess(pytester: Pytester):
-    """Test that --capture flag is forwarded and capture works in subprocess."""
+    """Test that capture works in subprocess even when parent uses --capture.
+
+    Note: --capture is NOT forwarded to child (child always uses tee-sys for
+    timeout handling), but the parent's --capture setting still controls what
+    the user sees in the final output.
+    """
     pytester.makepyfile(
         """
         import pytest
@@ -153,8 +159,8 @@ def test_capture_flag_forwarded_to_subprocess(pytester: Pytester):
         from pathlib import Path
 
         @pytest.mark.isolated
-        def test_check_capture_flag():
-            # Write sys.argv to verify --capture was forwarded
+        def test_check_capture_behavior():
+            # Write sys.argv to verify child uses tee-sys (not parent's capture mode)
             Path("subprocess_args.txt").write_text(str(sys.argv))
             # Print output that should be captured
             print("captured output")
@@ -165,15 +171,56 @@ def test_capture_flag_forwarded_to_subprocess(pytester: Pytester):
     result = pytester.runpytest("-v", "--capture=sys")
     result.assert_outcomes(passed=1)
 
-    # Verify --capture=sys flag was forwarded to subprocess
+    # Verify child used tee-sys, not the parent's --capture=sys
     args_file = pytester.path / "subprocess_args.txt"
     assert args_file.exists()
     args_content = args_file.read_text()
-    has_capture_sys = "--capture=sys" in args_content
-    has_capture_and_sys = "--capture" in args_content and "sys" in args_content
-    assert has_capture_sys or has_capture_and_sys
-    # Verify capture worked - output should NOT appear in test output for passed test
+    assert "--capture=tee-sys" in args_content
+    assert "--capture=sys" not in args_content  # Parent's flag NOT forwarded
+
+    # Verify capture still works - output should NOT appear for passed test
+    # (parent's --capture=sys controls final output visibility)
     assert "captured output" not in result.stdout.str()
+
+
+@pytest.mark.parametrize(
+    "capture_args",
+    [
+        ("--capture=no",),
+        ("--capture", "no"),
+    ],
+    ids=["combined", "separate"],
+)
+def test_capture_no_disables_tee_sys(pytester: Pytester, capture_args: tuple[str, ...]):
+    """Test that --capture=no is treated like -s in the child process.
+
+    When user explicitly specifies --capture=no, the child should also
+    have no capture (via -s flag), not just skip tee-sys.
+    """
+    pytester.makepyfile(
+        """
+        import pytest
+        import sys
+        from pathlib import Path
+
+        @pytest.mark.isolated
+        def test_capture_no_behavior():
+            # Write sys.argv to verify child gets -s
+            Path("subprocess_args.txt").write_text(str(sys.argv))
+            print("output with --capture=no")
+            assert True
+    """
+    )
+
+    result = pytester.runpytest("-v", *capture_args)
+    result.assert_outcomes(passed=1)
+
+    # Verify child got -s (no capture) instead of tee-sys
+    args_file = pytester.path / "subprocess_args.txt"
+    assert args_file.exists()
+    args_content = args_file.read_text()
+    assert "--capture=tee-sys" not in args_content
+    assert "-s" in args_content  # Child should have no capture
 
 
 def test_capture_output_behavior_failed_test(pytester: Pytester):

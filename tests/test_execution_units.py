@@ -21,7 +21,7 @@ class TestBuildForwardedArgs:
         ("flags", "expected_forwarded"),
         [
             (["-v", "tests/"], ["-v"]),
-            (["-s", "-x", "tests/"], ["-s", "-x"]),
+            (["-x", "tests/"], ["-x"]),
             (["-v", "-v", "-v"], ["-v", "-v", "-v"]),
             (["-q", "-l"], ["-q", "-l"]),
             (["--verbose", "--exitfirst"], ["--verbose", "--exitfirst"]),
@@ -42,7 +42,6 @@ class TestBuildForwardedArgs:
         ("args", "expected_option", "expected_value"),
         [
             (["--tb", "short", "tests/"], "--tb", "short"),
-            (["--capture", "sys", "tests/"], "--capture", "sys"),
             (["-r", "fE"], "-r", "fE"),
         ],
     )
@@ -63,15 +62,14 @@ class TestBuildForwardedArgs:
     @pytest.mark.parametrize(
         ("args", "expected"),
         [
-            (["--capture=sys", "tests/"], ["--capture=sys"]),
             (["--tb=short", "tests/"], ["--tb=short"]),
-            (["--capture=no", "-r=fE"], ["--capture=no", "-r=fE"]),
+            (["-r=fE", "tests/"], ["-r=fE"]),
         ],
     )
     def test_forwards_options_with_values_combined(
         self, args: list[str], expected: list[str]
     ) -> None:
-        """Test that combined options like --capture=sys are forwarded."""
+        """Test that combined options like --tb=short are forwarded."""
         config = Mock()
         config.invocation_params.args = args
 

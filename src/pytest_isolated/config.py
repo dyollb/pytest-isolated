@@ -25,20 +25,23 @@ _FORWARD_FLAGS: Final = {
     "--verbose",
     "-q",
     "--quiet",
-    "-s",  # disable output capturing
     "-l",
     "--showlocals",
     "--strict-markers",
     "--strict-config",
     "-x",  # exit on first failure
     "--exitfirst",
+    # Note: -s is NOT forwarded. Child's capture mode is determined by checking
+    # config.getoption("capture") and explicitly setting -s or --capture=tee-sys.
 }
 
 # Options that should be forwarded to subprocess (options with values)
 _FORWARD_OPTIONS_WITH_VALUE: Final = {
     "--tb",  # traceback style
     "-r",  # show extra test summary info
-    "--capture",  # output capture method (fd, sys, no, tee-sys)
+    # Note: --capture is NOT forwarded. Child uses tee-sys by default, unless user
+    # specifies -s/--capture=no (which is respected). Parent's --capture controls
+    # what the user sees.
 }
 
 

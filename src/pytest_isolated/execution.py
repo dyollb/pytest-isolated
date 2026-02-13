@@ -443,14 +443,28 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
 
         # Build forwarded args and subprocess command
         forwarded_args = _build_forwarded_args(config)
-        # Use -u to force unbuffered output (so partial output is captured
+
+        # Determine child's capture mode
+        # Check if user wants no capture via -s or --capture=no
+        # Note: Both -s and --capture=no result in capture mode "no"
+        capture_mode = config.getoption("capture", "fd")
+
+        # Build subprocess command
+        # Use -u to force unbuffered output (so partial output is available
         # on timeout/crash)
-        # Use --capture=tee-sys to duplicate output to both pytest's capture
-        # AND stdout/stderr
-        # This allows the parent to capture partial output on timeout/crash
-        # while still maintaining pytest's normal capture behavior for
-        # completed tests
-        cmd = [sys.executable, "-u", "-m", "pytest", "--capture=tee-sys"]
+        # Default to --capture=tee-sys which duplicates output to both pytest's
+        # capture AND stdout/stderr. This allows the parent to capture partial
+        # output on timeout/crash via subprocess.run(). For normal test
+        # completion, output comes through JSONL reports.
+        # The parent's --capture setting (not forwarded) controls what the user sees.
+        # Exception: if user wants no capture (-s or --capture=no), respect that.
+        cmd = [sys.executable, "-u", "-m", "pytest"]
+        if capture_mode == "no":
+            # User wants no capture via -s or --capture=no
+            cmd.append("-s")
+        else:
+            # Default: use tee-sys for timeout/crash output capture
+            cmd.append("--capture=tee-sys")
         cmd.extend(forwarded_args)
 
         # Pass rootdir to subprocess to ensure it uses the same project root
