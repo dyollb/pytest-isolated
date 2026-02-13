@@ -182,6 +182,38 @@ def test_capture_flag_forwarded_to_subprocess(pytester: Pytester):
     assert "captured output" not in result.stdout.str()
 
 
+def test_capture_no_disables_tee_sys(pytester: Pytester):
+    """Test that --capture=no is treated like -s in the child process.
+
+    When user explicitly specifies --capture=no, the child should also
+    have no capture (via -s flag), not just skip tee-sys.
+    """
+    pytester.makepyfile(
+        """
+        import pytest
+        import sys
+        from pathlib import Path
+
+        @pytest.mark.isolated
+        def test_capture_no_behavior():
+            # Write sys.argv to verify child gets -s
+            Path("subprocess_args.txt").write_text(str(sys.argv))
+            print("output with --capture=no")
+            assert True
+    """
+    )
+
+    result = pytester.runpytest("-v", "--capture=no")
+    result.assert_outcomes(passed=1)
+
+    # Verify child got -s (no capture) instead of tee-sys
+    args_file = pytester.path / "subprocess_args.txt"
+    assert args_file.exists()
+    args_content = args_file.read_text()
+    assert "--capture=tee-sys" not in args_content
+    assert "-s" in args_content  # Child should have no capture
+
+
 def test_capture_output_behavior_failed_test(pytester: Pytester):
     """Test that failed test output is shown regardless of capture mode."""
     pytester.makepyfile(

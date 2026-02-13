@@ -444,17 +444,42 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         # Build forwarded args and subprocess command
         forwarded_args = _build_forwarded_args(config)
 
-        # Use -u to force unbuffered output (so partial output is captured
+        # Determine child's capture mode
+        # -s is forwarded if user specified it (in _FORWARD_FLAGS)
+        # --capture is NOT forwarded (removed from _FORWARD_OPTIONS_WITH_VALUE)
+        # Check original args for --capture=no in both forms
+        original_args = config.invocation_params.args
+        user_wants_no_capture = "-s" in forwarded_args
+
+        for i, arg in enumerate(original_args):
+            if arg == "--capture=no":
+                user_wants_no_capture = True
+                break
+            if (
+                arg == "--capture"
+                and i + 1 < len(original_args)
+                and original_args[i + 1] == "no"
+            ):
+                user_wants_no_capture = True
+                break
+
+        # Build subprocess command
+        # Use -u to force unbuffered output (so partial output is available
         # on timeout/crash)
-        # Use --capture=tee-sys to duplicate output to both pytest's capture
-        # AND stdout/stderr. This allows the parent to capture partial output
-        # on timeout/crash via subprocess.run(). For normal test completion,
-        # output comes through JSONL reports. The parent's --capture setting
-        # (not forwarded to child) controls what the user sees.
-        # Exception: -s is forwarded for debugging scenarios where the user
-        # explicitly wants no capture.
+        # Default to --capture=tee-sys which duplicates output to both pytest's
+        # capture AND stdout/stderr. This allows the parent to capture partial
+        # output on timeout/crash via subprocess.run(). For normal test
+        # completion, output comes through JSONL reports.
+        # The parent's --capture setting (not forwarded) controls what the user sees.
+        # Exception: if user wants no capture (-s or --capture=no), respect that.
         cmd = [sys.executable, "-u", "-m", "pytest"]
-        if "-s" not in forwarded_args:
+        if user_wants_no_capture:
+            # User wants no capture via -s or --capture=no
+            # Add -s if not already present (it may be in forwarded_args)
+            if "-s" not in forwarded_args:
+                cmd.append("-s")
+        else:
+            # Default: use tee-sys for timeout/crash output capture
             cmd.append("--capture=tee-sys")
         cmd.extend(forwarded_args)
 
