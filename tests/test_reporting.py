@@ -3,6 +3,7 @@
 Tests output capture, JUnit XML reporting, and test result handling.
 """
 
+import pytest
 from pytest import Pytester
 
 
@@ -182,7 +183,15 @@ def test_capture_flag_forwarded_to_subprocess(pytester: Pytester):
     assert "captured output" not in result.stdout.str()
 
 
-def test_capture_no_disables_tee_sys(pytester: Pytester):
+@pytest.mark.parametrize(
+    "capture_args",
+    [
+        ("--capture=no",),
+        ("--capture", "no"),
+    ],
+    ids=["combined", "separate"],
+)
+def test_capture_no_disables_tee_sys(pytester: Pytester, capture_args: tuple[str, ...]):
     """Test that --capture=no is treated like -s in the child process.
 
     When user explicitly specifies --capture=no, the child should also
@@ -203,7 +212,7 @@ def test_capture_no_disables_tee_sys(pytester: Pytester):
     """
     )
 
-    result = pytester.runpytest("-v", "--capture=no")
+    result = pytester.runpytest("-v", *capture_args)
     result.assert_outcomes(passed=1)
 
     # Verify child got -s (no capture) instead of tee-sys
