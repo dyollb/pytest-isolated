@@ -38,7 +38,8 @@ _FORWARD_FLAGS: Final = {
 _FORWARD_OPTIONS_WITH_VALUE: Final = {
     "--tb",  # traceback style
     "-r",  # show extra test summary info
-    "--capture",  # output capture method (fd, sys, no, tee-sys)
+    # Note: --capture is NOT forwarded. Child always uses tee-sys for timeout
+    # output capture. Parent's --capture controls what the user sees.
 }
 
 
