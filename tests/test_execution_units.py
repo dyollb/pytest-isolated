@@ -21,7 +21,7 @@ class TestBuildForwardedArgs:
         ("flags", "expected_forwarded"),
         [
             (["-v", "tests/"], ["-v"]),
-            (["-s", "-x", "tests/"], ["-s", "-x"]),
+            (["-x", "tests/"], ["-x"]),
             (["-v", "-v", "-v"], ["-v", "-v", "-v"]),
             (["-q", "-l"], ["-q", "-l"]),
             (["--verbose", "--exitfirst"], ["--verbose", "--exitfirst"]),

@@ -461,9 +461,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         cmd = [sys.executable, "-u", "-m", "pytest"]
         if capture_mode == "no":
             # User wants no capture via -s or --capture=no
-            # Add -s if not already present (it may be in forwarded_args)
-            if "-s" not in forwarded_args:
-                cmd.append("-s")
+            cmd.append("-s")
         else:
             # Default: use tee-sys for timeout/crash output capture
             cmd.append("--capture=tee-sys")
