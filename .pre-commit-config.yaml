@@ -6,6 +6,8 @@ repos:
         - id: trailing-whitespace
         - id: check-yaml
           exclude: \.gitlab-ci\.yml|ci_(.*)\.yml
+        - id: check-toml
+        - id: check-json
         - id: check-docstring-first
         - id: check-executables-have-shebangs
         - id: check-merge-conflict
@@ -35,3 +37,13 @@ repos:
       rev: v1.7.11
       hooks:
         - id: actionlint
+
+    - repo: https://github.com/abravalheri/validate-pyproject
+      rev: v0.25
+      hooks:
+        - id: validate-pyproject
+
+    - repo: https://github.com/codespell-project/codespell
+      rev: v2.4.1
+      hooks:
+        - id: codespell
