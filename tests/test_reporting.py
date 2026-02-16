@@ -51,7 +51,7 @@ def test_skipped_test_handling(pytester: Pytester):
 
 
 def test_xfail_test_handling(pytester: Pytester):
-    """Test that xfail tests are properly handled."""
+    """Test that xfail tests are properly handled and reason is displayed."""
     pytester.makepyfile(
         """
         import pytest
@@ -65,6 +65,9 @@ def test_xfail_test_handling(pytester: Pytester):
 
     result = pytester.runpytest("-v")
     result.assert_outcomes(xfailed=1)
+
+    # Verify the xfail reason is displayed in the output
+    assert "Expected to fail" in result.stdout.str()
 
 
 def test_junit_xml_output(pytester: Pytester):
