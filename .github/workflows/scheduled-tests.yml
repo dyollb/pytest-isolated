@@ -22,6 +22,8 @@ jobs:
         # Add Python 3.12-3.14 only for Ubuntu
         include:
           - os: ubuntu-latest
+            python-version: "3.10"
+          - os: ubuntu-latest
             python-version: "3.12"
           - os: ubuntu-latest
             python-version: "3.13"

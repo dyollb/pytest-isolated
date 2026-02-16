@@ -7,7 +7,7 @@ name = "pytest-isolated"
 dynamic = ["version"]
 description = "Run marked pytest tests in grouped subprocesses (cross-platform)."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = ["pytest>=7.0"]
 license = "MIT"
 authors = [
@@ -33,6 +33,7 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -76,7 +77,7 @@ pytest_isolated = ["py.typed"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = [
