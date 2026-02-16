@@ -12,6 +12,28 @@ import pytest
 from .config import SUBPROC_REPORT_PATH
 
 
+def _get_xfail_reason(item: pytest.Item) -> str | None:
+    """Extract xfail reason from marker if present.
+
+    Returns the xfail reason string, or None if no xfail marker.
+    """
+    xfail_marker = item.get_closest_marker("xfail")
+    if not xfail_marker:
+        return None
+
+    # Try to get reason from kwargs first, then from args
+    reason = xfail_marker.kwargs.get("reason")
+    if reason:
+        return str(reason)
+
+    # If no reason in kwargs, try first positional arg
+    if xfail_marker.args:
+        return str(xfail_marker.args[0])
+
+    # Default if no reason provided
+    return "xfail"
+
+
 class _TestRecord(TypedDict, total=False):
     """Structure for test phase results from subprocess."""
 
@@ -25,7 +47,7 @@ class _TestRecord(TypedDict, total=False):
     keywords: list[str]
     sections: list[tuple[str, str]]
     user_properties: list[tuple[str, Any]]
-    wasxfail: bool
+    wasxfail: str  # xfail reason string
 
 
 def _format_crash_reason(returncode: int) -> str:
@@ -82,8 +104,10 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         "keywords": list(report.keywords),
         "sections": getattr(report, "sections", []),  # captured logs, etc.
         "user_properties": getattr(report, "user_properties", []),
-        "wasxfail": hasattr(report, "wasxfail"),
     }
+    # Store xfail reason if present
+    if hasattr(report, "wasxfail"):
+        rec["wasxfail"] = str(report.wasxfail)
     with Path(path).open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
 
@@ -99,7 +123,7 @@ def _emit_report(
     stderr: str = "",
     sections: list[tuple[str, str]] | None = None,
     user_properties: list[tuple[str, Any]] | None = None,
-    wasxfail: bool = False,
+    wasxfail: str | None = None,
 ) -> None:
     """Emit a test report for a specific test phase."""
     call = pytest.CallInfo.from_call(lambda: None, when=when)
@@ -111,7 +135,7 @@ def _emit_report(
         rep.user_properties = user_properties
 
     if wasxfail:
-        rep.wasxfail = "reason: xfail"
+        rep.wasxfail = wasxfail
 
     # For skipped tests, longrepr needs to be a tuple (path, lineno, reason)
     if outcome == "skipped" and longrepr:
@@ -159,15 +183,15 @@ def _emit_failure_for_items(
     empty output in later phases can clear the captured output from earlier phases.
     """
     for it in items:
-        xfail_marker = it.get_closest_marker("xfail")
+        xfail_reason = _get_xfail_reason(it)
         _emit_report(it, when="setup", outcome="passed", stdout=stdout, stderr=stderr)
-        if xfail_marker:
+        if xfail_reason:
             _emit_report(
                 it,
                 when="call",
                 outcome="skipped",
                 longrepr=error_message,
-                wasxfail=True,
+                wasxfail=xfail_reason,
                 stdout=stdout,
                 stderr=stderr,
             )

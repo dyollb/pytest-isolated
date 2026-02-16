@@ -28,6 +28,7 @@ from .reporting import (
     _emit_failure_for_items,
     _emit_report,
     _format_crash_message,
+    _get_xfail_reason,
     _TestRecord,
 )
 
@@ -275,14 +276,14 @@ def _handle_mid_test_crash(
                 )
 
             # Emit call phase as failed with crash info
-            xfail_marker = it.get_closest_marker("xfail")
-            if xfail_marker:
+            xfail_reason = _get_xfail_reason(it)
+            if xfail_reason:
                 _emit_report(
                     it,
                     when="call",
                     outcome="skipped",
                     longrepr=crash_msg,
-                    wasxfail=True,
+                    wasxfail=xfail_reason,
                 )
             else:
                 _emit_report(
@@ -363,13 +364,14 @@ def _emit_all_results(
                 stderr=rec.get("stderr", ""),
                 sections=rec.get("sections"),
                 user_properties=rec.get("user_properties"),
-                wasxfail=rec.get("wasxfail", False),
+                wasxfail=rec.get("wasxfail"),
             )
 
             if when == "call" and rec["outcome"] == "failed":
                 ctx.session.testsfailed += 1
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_runtestloop(session: pytest.Session) -> int | None:
     """Execute isolated test groups in subprocesses and remaining tests in-process.
 

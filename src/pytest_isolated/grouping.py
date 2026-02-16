@@ -19,6 +19,7 @@ def _has_isolated_marker(obj: Any) -> bool:
     return any(getattr(m, "name", None) == "isolated" for m in markers)
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
