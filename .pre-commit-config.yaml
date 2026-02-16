@@ -6,6 +6,8 @@ repos:
         - id: trailing-whitespace
         - id: check-yaml
           exclude: \.gitlab-ci\.yml|ci_(.*)\.yml
+        - id: check-toml
+        - id: check-json
         - id: check-docstring-first
         - id: check-executables-have-shebangs
         - id: check-merge-conflict
@@ -15,7 +17,7 @@ repos:
         - id: detect-private-key
 
     - repo: https://github.com/astral-sh/ruff-pre-commit
-      rev: v0.15.0
+      rev: v0.15.1
       hooks:
         - id: ruff-check
           args: ["--fix"]
@@ -32,6 +34,16 @@ repos:
           exclude: CHANGELOG.md
 
     - repo: https://github.com/rhysd/actionlint
-      rev: v1.7.10
+      rev: v1.7.11
       hooks:
         - id: actionlint
+
+    - repo: https://github.com/abravalheri/validate-pyproject
+      rev: v0.25
+      hooks:
+        - id: validate-pyproject
+
+    - repo: https://github.com/codespell-project/codespell
+      rev: v2.4.1
+      hooks:
+        - id: codespell
