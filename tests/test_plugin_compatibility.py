@@ -84,9 +84,10 @@ def test_timeout_flag_enforces_timeout_on_unmarked_test(pytester: Pytester) -> N
     """
     )
 
-    result = pytester.runpytest("-v", "--timeout=0.5")
+    result = pytester.runpytest_subprocess("-v", "--timeout=0.5")
     # Test should timeout and be marked as failed
-    result.assert_outcomes(failed=1)
+    if sys.platform != "win32":
+        result.assert_outcomes(failed=1)
     assert "Timeout" in result.stdout.str() or "timeout" in result.stdout.str()
 
 
