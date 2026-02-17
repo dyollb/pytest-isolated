@@ -39,6 +39,7 @@ _FORWARD_FLAGS: Final = {
 _FORWARD_OPTIONS_WITH_VALUE: Final = {
     "--tb",  # traceback style
     "-r",  # show extra test summary info
+    "--timeout",  # pytest-timeout plugin timeout value
     # Note: --capture is NOT forwarded. Child uses tee-sys by default, unless user
     # specifies -s/--capture=no (which is respected). Parent's --capture controls
     # what the user sees.
