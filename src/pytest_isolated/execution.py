@@ -371,7 +371,6 @@ def _emit_all_results(
                 ctx.session.testsfailed += 1
 
 
-@pytest.hookimpl(tryfirst=True)
 def pytest_runtestloop(session: pytest.Session) -> int | None:
     """Execute isolated test groups in subprocesses and remaining tests in-process.
 
@@ -412,6 +411,10 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
             isolated_nodeids.add(it.nodeid)
 
     groups = filtered_groups
+
+    # If no isolated tests to run, return None to let default loop handle everything
+    if not groups:
+        return None
 
     # Normal items are those in session.items but not in isolated groups
     normal_items = [it for it in session.items if it.nodeid not in isolated_nodeids]
