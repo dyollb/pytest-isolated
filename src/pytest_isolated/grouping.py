@@ -19,6 +19,13 @@ def _has_isolated_marker(obj: Any) -> bool:
     return any(getattr(m, "name", None) == "isolated" for m in markers)
 
 
+def _has_own_isolated_marker(item: pytest.Item) -> bool:
+    """Check if item has isolated marker directly on it (not inherited)."""
+    # own_markers contains markers directly applied to this item
+    # (not inherited from class/module)
+    return any(m.name == "isolated" for m in item.own_markers)
+
+
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
@@ -60,7 +67,11 @@ def pytest_collection_modifyitems(
                 group = item.nodeid
             # Check if marker was applied to a class or module
             elif isinstance(item, pytest.Function):
-                if item.cls is not None and _has_isolated_marker(item.cls):
+                # If function has its own explicit marker (not inherited),
+                # use unique nodeid unless a group was specified
+                if _has_own_isolated_marker(item):
+                    group = item.nodeid
+                elif item.cls is not None and _has_isolated_marker(item.cls):
                     # Group by class name (module::class)
                     parts = item.nodeid.split("::")
                     group = "::".join(parts[:2]) if len(parts) >= 3 else item.nodeid
