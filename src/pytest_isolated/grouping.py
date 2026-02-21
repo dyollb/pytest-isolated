@@ -34,9 +34,8 @@ def pytest_collection_modifyitems(
     # If --pdb is set, disable isolation automatically (with a warning)
     # because pdb cannot work in subprocesses
     if config.getoption("usepdb", False):
-        has_isolated_tests = any(
-            item.get_closest_marker("isolated") or config.getoption("isolated", False)
-            for item in items
+        has_isolated_tests = config.getoption("isolated", False) or any(
+            item.get_closest_marker("isolated") for item in items
         )
         if has_isolated_tests:
             warnings.warn(
