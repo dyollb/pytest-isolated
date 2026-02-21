@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from collections import OrderedDict
 from typing import Any
 
@@ -27,6 +28,25 @@ def pytest_collection_modifyitems(
 
     # If --no-isolation is set, treat all tests as normal (no subprocess isolation)
     if config.getoption("no_isolation", False):
+        setattr(config, CONFIG_ATTR_GROUPS, OrderedDict())
+        return
+
+    # If --pdb is set, disable isolation automatically (with a warning)
+    # because pdb cannot work in subprocesses
+    if config.getoption("usepdb", False):
+        has_isolated_tests = any(
+            item.get_closest_marker("isolated") or config.getoption("isolated", False)
+            for item in items
+        )
+        if has_isolated_tests:
+            warnings.warn(
+                pytest.PytestWarning(
+                    "Isolation automatically disabled: --pdb cannot work "
+                    "with isolated tests. Tests will run in the main process. "
+                    "To avoid this warning, use '--no-isolation --pdb' explicitly."
+                ),
+                stacklevel=2,
+            )
         setattr(config, CONFIG_ATTR_GROUPS, OrderedDict())
         return
 

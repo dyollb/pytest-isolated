@@ -107,3 +107,135 @@ def test_subprocess_with_local_imports(pytester: Pytester):
     result = pytester.runpytest("-v", "--rootdir", "tests", "tests/test_with_import.py")
     # This should fail without the fix because the subprocess won't pass --rootdir
     result.assert_outcomes(passed=1)
+
+
+def test_pdb_with_isolated_tests(pytester: Pytester):
+    """Test that --pdb disables isolation with a helpful warning (issue #34).
+
+    When --pdb is used with isolated tests, the debugger cannot work
+    because tests run in subprocesses. We automatically disable isolation
+    and show a helpful warning suggesting to use --no-isolation explicitly.
+    """
+    pytester.makepyfile(
+        """
+        import pytest
+
+        counter = 0
+
+        @pytest.mark.isolated
+        def test_good1():
+            global counter
+            counter += 1
+            assert counter == 1
+
+        @pytest.mark.isolated
+        def test_good2():
+            global counter
+            counter += 1
+            # With isolation disabled, tests share state
+            assert counter == 2
+    """
+    )
+
+    # Run with --pdb flag - tests pass so debugger won't be triggered
+    result = pytester.runpytest("-v", "--pdb")
+
+    # Both tests should pass (they share state with isolation disabled)
+    result.assert_outcomes(passed=2)
+
+    # Check that a warning was shown recommending --no-isolation
+    output = result.stdout.str()
+    full_output = output + result.stderr.str()
+    assert "--no-isolation" in full_output, (
+        f"Expected warning to mention --no-isolation flag:\n{full_output}"
+    )
+    assert (
+        "automatically disabled" in full_output or "Isolation disabled" in full_output
+    ), f"Expected warning about isolation being disabled:\n{full_output}"
+
+
+def test_no_isolation_with_pdb_no_warning(pytester: Pytester):
+    """Test that --no-isolation --pdb together doesn't produce a warning.
+
+    When users explicitly use --no-isolation with --pdb, there should be
+    no warning since they've made their intent clear.
+    """
+    pytester.makepyfile(
+        """
+        import pytest
+
+        counter = 0
+
+        @pytest.mark.isolated
+        def test_good1():
+            global counter
+            counter += 1
+            assert counter == 1
+
+        @pytest.mark.isolated
+        def test_good2():
+            global counter
+            counter += 1
+            assert counter == 2
+    """
+    )
+
+    # Run with both --no-isolation and --pdb - no warning expected
+    result = pytester.runpytest("-v", "--no-isolation", "--pdb")
+
+    # Both tests should pass
+    result.assert_outcomes(passed=2)
+
+    # No warning should be shown since user was explicit
+    output = result.stdout.str() + result.stderr.str()
+    assert "Isolation" not in output or "0 warnings" in output, (
+        f"Expected no isolation warnings when using --no-isolation "
+        f"explicitly:\n{output}"
+    )
+
+
+def test_failed_first_with_isolated_tests(pytester: Pytester):
+    """Test that --ff (failed first) reorders isolated tests (issue #34).
+
+    The --ff flag should run previously failed tests first, even for isolated tests.
+    """
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated
+        def test_good1():
+            assert True
+
+        @pytest.mark.isolated
+        def test_fail():
+            assert False, "This test fails"
+
+        @pytest.mark.isolated
+        def test_good2():
+            assert True
+    """
+    )
+
+    # First run: let the test fail and record it in cache
+    result1 = pytester.runpytest("-v")
+    result1.assert_outcomes(passed=2, failed=1)
+
+    # Second run with --ff: the failed test should run first
+    result2 = pytester.runpytest("-v", "--ff")
+    result2.assert_outcomes(passed=2, failed=1)
+
+    # Verify that test_fail was run first in the second run
+    output = result2.stdout.str()
+
+    # Check for the "run-last-failure" message
+    assert "run-last-failure" in output, (
+        "Expected --ff to trigger run-last-failure mode"
+    )
+
+    # Verify test_fail ran first by checking output order
+    assert "test_fail FAILED" in output
+    # test_fail should appear before test_good1 in output since it ran first
+    assert output.index("test_fail FAILED") < output.index("test_good1 PASSED"), (
+        "test_fail should run before test_good1 with --ff"
+    )

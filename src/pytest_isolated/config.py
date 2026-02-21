@@ -33,6 +33,8 @@ _FORWARD_FLAGS: Final = {
     "--exitfirst",
     # Note: -s is NOT forwarded. Child's capture mode is determined by checking
     # config.getoption("capture") and explicitly setting -s or --capture=tee-sys.
+    # Note: --pdb is NOT forwarded. Tests run in subprocess cannot use interactive
+    # debugger. When --pdb is detected, isolation is automatically disabled.
 }
 
 # Options that should be forwarded to subprocess (options with values)
