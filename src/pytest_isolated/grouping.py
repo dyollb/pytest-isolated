@@ -30,6 +30,22 @@ def pytest_collection_modifyitems(
         setattr(config, CONFIG_ATTR_GROUPS, OrderedDict())
         return
 
+    # If --pdb is set, refuse to run isolated tests (pdb cannot work in subprocesses)
+    if config.getoption("usepdb", False):
+        has_isolated_tests = config.getoption("isolated", False) or any(
+            item.get_closest_marker("isolated") for item in items
+        )
+        if has_isolated_tests:
+            msg = (
+                "--pdb cannot be used with isolated tests (subprocesses "
+                "don't support interactive debugging).\n"
+                "  Use '--no-isolation --pdb' to debug without isolation."
+            )
+            raise pytest.UsageError(msg)
+        # No isolated tests found, nothing to do
+        setattr(config, CONFIG_ATTR_GROUPS, OrderedDict())
+        return
+
     # If --isolated is set, run all tests in isolation
     run_all_isolated = config.getoption("isolated", False)
 
