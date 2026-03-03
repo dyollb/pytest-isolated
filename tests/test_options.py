@@ -110,55 +110,45 @@ def test_subprocess_with_local_imports(pytester: Pytester):
 
 
 def test_pdb_with_isolated_tests(pytester: Pytester):
-    """Test that --pdb disables isolation with a helpful warning (issue #34).
+    """Test that --pdb with isolated tests exits with a UsageError (issue #34).
 
-    When --pdb is used with isolated tests, the debugger cannot work
-    because tests run in subprocesses. We automatically disable isolation
-    and show a helpful warning suggesting to use --no-isolation explicitly.
+    When --pdb is used with isolated tests, pytest should refuse to run
+    because pdb cannot work in subprocesses. The error message should
+    suggest using --no-isolation --pdb explicitly.
     """
     pytester.makepyfile(
         """
         import pytest
 
-        counter = 0
-
         @pytest.mark.isolated
         def test_good1():
-            global counter
-            counter += 1
-            assert counter == 1
+            assert True
 
         @pytest.mark.isolated
         def test_good2():
-            global counter
-            counter += 1
-            # With isolation disabled, tests share state
-            assert counter == 2
+            assert True
     """
     )
 
-    # Run with --pdb flag - tests pass so debugger won't be triggered
+    # Run with --pdb flag - should exit with an error
     result = pytester.runpytest("-v", "--pdb")
 
-    # Both tests should pass (they share state with isolation disabled)
-    result.assert_outcomes(passed=2)
+    # pytest should have exited with an error code
+    assert result.ret != 0
 
-    # Check that a warning was shown recommending --no-isolation
-    output = result.stdout.str()
-    full_output = output + result.stderr.str()
+    # Check that the error message mentions --no-isolation
+    full_output = result.stdout.str() + result.stderr.str()
     assert "--no-isolation" in full_output, (
-        f"Expected warning to mention --no-isolation flag:\n{full_output}"
+        f"Expected error to mention --no-isolation flag:\n{full_output}"
     )
-    assert (
-        "automatically disabled" in full_output or "Isolation disabled" in full_output
-    ), f"Expected warning about isolation being disabled:\n{full_output}"
+    assert "--pdb" in full_output, f"Expected error to mention --pdb:\n{full_output}"
 
 
-def test_no_isolation_with_pdb_no_warning(pytester: Pytester):
-    """Test that --no-isolation --pdb together doesn't produce a warning.
+def test_no_isolation_with_pdb_no_error(pytester: Pytester):
+    """Test that --no-isolation --pdb together works without error.
 
     When users explicitly use --no-isolation with --pdb, there should be
-    no warning since they've made their intent clear.
+    no error since they've opted out of isolation.
     """
     pytester.makepyfile(
         """
@@ -180,18 +170,11 @@ def test_no_isolation_with_pdb_no_warning(pytester: Pytester):
     """
     )
 
-    # Run with both --no-isolation and --pdb - no warning expected
+    # Run with both --no-isolation and --pdb - should work fine
     result = pytester.runpytest("-v", "--no-isolation", "--pdb")
 
-    # Both tests should pass
+    # Both tests should pass (sharing state, no isolation)
     result.assert_outcomes(passed=2)
-
-    # No warning should be shown since user was explicit
-    output = result.stdout.str() + result.stderr.str()
-    assert "Isolation" not in output or "0 warnings" in output, (
-        f"Expected no isolation warnings when using --no-isolation "
-        f"explicitly:\n{output}"
-    )
 
 
 def test_failed_first_with_isolated_tests(pytester: Pytester):
