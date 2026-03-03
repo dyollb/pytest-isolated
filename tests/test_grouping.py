@@ -243,12 +243,11 @@ def test_module_marker_failing_test_log_in_correct_node(pytester: Pytester):
 
 
 def test_overlapping_module_and_function_markers(pytester: Pytester):
-    """Test behavior when both module and function markers are present (overlap).
+    """Function marker under module pytestmark breaks out of module group.
 
-    Issue #33: When a test has both pytestmark at module level AND @pytest.mark.isolated
-    on the function, we need to handle this gracefully:
-    - The test should only run once (not duplicated)
-    - Should either warn about the redundant marker or handle it silently
+    Precedence rule 2: closest marker wins — a function-level
+    ``@pytest.mark.isolated`` gets its own subprocess even inside
+    a module that already carries ``pytestmark``.
     """
     pytester.makepyfile(
         """
@@ -256,26 +255,23 @@ def test_overlapping_module_and_function_markers(pytester: Pytester):
 
         pytestmark = pytest.mark.isolated
 
-        call_count = 0
+        shared = []
 
         def test_module_marker_only():
-            global call_count
-            call_count += 1
+            shared.append("a")
             assert True
 
         @pytest.mark.isolated
         def test_both_markers():
-            # This test has BOTH module-level AND function-level markers
-            global call_count
-            call_count += 1
-            assert call_count == 1, f"Test ran {call_count} times, should only run once"
+            # Function marker wins over module scope.
+            # Runs in its own subprocess (no shared state).
+            assert len(shared) == 0
 
         @pytest.mark.isolated(group="custom")
         def test_both_markers_with_group():
-            # Module marker + function marker with explicit group
-            global call_count
-            call_count += 1
-            assert call_count == 1, f"Test ran {call_count} times, should only run once"
+            # Explicit group on function marker wins over module scope.
+            # Runs in its own subprocess.
+            assert len(shared) == 0
     """
     )
 
@@ -289,3 +285,292 @@ def test_overlapping_module_and_function_markers(pytester: Pytester):
     assert output.count("test_module_marker_only PASSED") == 1
     assert output.count("test_both_markers PASSED") == 1
     assert output.count("test_both_markers_with_group PASSED") == 1
+
+
+# ---------------------------------------------------------------------------
+# Marker precedence tests
+# ---------------------------------------------------------------------------
+
+
+class TestMarkerPrecedenceClassScope:
+    """Precedence rule: function marker wins over class marker."""
+
+    def test_class_plus_bare_function_marker(self, pytester: Pytester):
+        """Function @isolated under @isolated class breaks out."""
+        pytester.makepyfile(
+            """
+            import pytest
+
+            @pytest.mark.isolated
+            class TestGroup:
+                shared = []
+
+                def test_class_only(self):
+                    self.shared.append("a")
+                    assert len(self.shared) == 1
+
+                @pytest.mark.isolated
+                def test_with_own_marker(self):
+                    # Function marker wins; gets own subprocess.
+                    self.shared.append("b")
+                    assert len(self.shared) == 1
+        """
+        )
+        result = pytester.runpytest("-v")
+        result.assert_outcomes(passed=2)
+
+    def test_class_plus_function_marker_with_timeout(self, pytester: Pytester):
+        """@isolated(timeout=…) on a method breaks out of class grouping."""
+        pytester.makepyfile(
+            """
+            import pytest
+
+            @pytest.mark.isolated
+            class TestGroup:
+                shared = []
+
+                def test_fast(self):
+                    self.shared.append("fast")
+                    assert len(self.shared) == 1
+
+                @pytest.mark.isolated(timeout=60)
+                def test_slow(self):
+                    # Function marker wins; gets own subprocess.
+                    self.shared.append("slow")
+                    assert len(self.shared) == 1
+        """
+        )
+        result = pytester.runpytest("-v")
+        result.assert_outcomes(passed=2)
+
+    def test_class_plus_function_marker_with_explicit_group(self, pytester: Pytester):
+        """@isolated(group=…) on a method overrides class grouping."""
+        pytester.makepyfile(
+            """
+            import pytest
+
+            @pytest.mark.isolated
+            class TestGroup:
+                shared = []
+
+                def test_stays_in_class(self):
+                    self.shared.append("a")
+                    assert len(self.shared) == 1
+
+                @pytest.mark.isolated(group="solo")
+                def test_explicit_group(self):
+                    # Explicit group breaks out of class subprocess.
+                    self.shared.append("b")
+                    assert len(self.shared) == 1  # own subprocess
+        """
+        )
+        result = pytester.runpytest("-v")
+        result.assert_outcomes(passed=2)
+
+
+class TestMarkerPrecedenceModuleScope:
+    """Precedence rule: function marker wins over module marker."""
+
+    def test_module_plus_bare_function_marker(self, pytester: Pytester):
+        """Function @isolated under module pytestmark breaks out."""
+        pytester.makepyfile(
+            """
+            import pytest
+
+            pytestmark = pytest.mark.isolated
+
+            shared = []
+
+            def test_module_only():
+                shared.append("a")
+                assert len(shared) == 1
+
+            @pytest.mark.isolated
+            def test_with_own_marker():
+                # Function marker wins; gets own subprocess.
+                assert len(shared) == 0
+        """
+        )
+        result = pytester.runpytest("-v")
+        result.assert_outcomes(passed=2)
+
+    def test_module_plus_function_marker_with_timeout(self, pytester: Pytester):
+        """@isolated(timeout=…) on a function breaks out of module grouping."""
+        pytester.makepyfile(
+            """
+            import pytest
+
+            pytestmark = pytest.mark.isolated
+
+            shared = []
+
+            def test_normal():
+                shared.append("a")
+                assert len(shared) == 1
+
+            @pytest.mark.isolated(timeout=60)
+            def test_with_timeout():
+                # Function marker wins; gets own subprocess.
+                assert len(shared) == 0
+        """
+        )
+        result = pytester.runpytest("-v")
+        result.assert_outcomes(passed=2)
+
+    def test_module_plus_function_marker_with_explicit_group(self, pytester: Pytester):
+        """@isolated(group=…) on a function overrides module grouping."""
+        pytester.makepyfile(
+            """
+            import pytest
+
+            pytestmark = pytest.mark.isolated
+
+            shared = []
+
+            def test_stays_in_module():
+                shared.append("a")
+                assert len(shared) == 1
+
+            @pytest.mark.isolated(group="breakout")
+            def test_with_explicit_group():
+                # Explicit group wins; gets own subprocess.
+                shared.append("b")
+                assert len(shared) == 1
+        """
+        )
+        result = pytester.runpytest("-v")
+        result.assert_outcomes(passed=2)
+
+
+class TestMarkerPrecedenceMultiScope:
+    """Precedence when module, class, and function markers all overlap."""
+
+    def test_module_plus_class_groups_by_class(self, pytester: Pytester):
+        """Class @isolated inside module pytestmark groups by class."""
+        pytester.makepyfile(
+            """
+            import pytest
+
+            pytestmark = pytest.mark.isolated
+
+            module_shared = []
+
+            def test_module_function():
+                module_shared.append("mod")
+                assert len(module_shared) == 1
+
+            @pytest.mark.isolated
+            class TestInner:
+                class_shared = []
+
+                def test_a(self):
+                    self.class_shared.append("a")
+                    assert len(self.class_shared) == 1
+
+                def test_b(self):
+                    self.class_shared.append("b")
+                    assert len(self.class_shared) == 2  # same class group
+        """
+        )
+        result = pytester.runpytest("-v")
+        result.assert_outcomes(passed=3)
+
+    def test_module_class_and_function_bare_marker(self, pytester: Pytester):
+        """All three scopes: function marker wins, breaks out of class."""
+        pytester.makepyfile(
+            """
+            import pytest
+
+            pytestmark = pytest.mark.isolated
+
+            @pytest.mark.isolated
+            class TestTriple:
+                shared = []
+
+                def test_class_only(self):
+                    self.shared.append("a")
+                    assert len(self.shared) == 1
+
+                @pytest.mark.isolated
+                def test_all_three(self):
+                    # Function marker wins; gets own subprocess.
+                    self.shared.append("b")
+                    assert len(self.shared) == 1
+        """
+        )
+        result = pytester.runpytest("-v")
+        result.assert_outcomes(passed=2)
+
+    def test_module_class_and_function_with_explicit_group(self, pytester: Pytester):
+        """Explicit group on function wins over both class and module."""
+        pytester.makepyfile(
+            """
+            import pytest
+
+            pytestmark = pytest.mark.isolated
+
+            @pytest.mark.isolated
+            class TestTriple:
+                shared = []
+
+                def test_class_only(self):
+                    self.shared.append("a")
+                    assert len(self.shared) == 1
+
+                @pytest.mark.isolated(group="breakout")
+                def test_explicit_group(self):
+                    # Explicit group wins; own subprocess.
+                    self.shared.append("b")
+                    assert len(self.shared) == 1
+        """
+        )
+        result = pytester.runpytest("-v")
+        result.assert_outcomes(passed=2)
+
+
+class TestMarkerPrecedenceStandalone:
+    """Standalone function markers (no parent isolation scope)."""
+
+    def test_function_marker_only_gets_own_subprocess(self, pytester: Pytester):
+        """@isolated on a function without class/module scope -> own group."""
+        pytester.makepyfile(
+            """
+            import pytest
+
+            shared = []
+
+            @pytest.mark.isolated
+            def test_a():
+                shared.append("a")
+                assert len(shared) == 1
+
+            @pytest.mark.isolated
+            def test_b():
+                shared.append("b")
+                assert len(shared) == 1  # own subprocess
+        """
+        )
+        result = pytester.runpytest("-v")
+        result.assert_outcomes(passed=2)
+
+    def test_function_marker_with_timeout_gets_own_subprocess(self, pytester: Pytester):
+        """@isolated(timeout=…) without parent scope -> own group."""
+        pytester.makepyfile(
+            """
+            import pytest
+
+            shared = []
+
+            @pytest.mark.isolated(timeout=60)
+            def test_a():
+                shared.append("a")
+                assert len(shared) == 1
+
+            @pytest.mark.isolated
+            def test_b():
+                shared.append("b")
+                assert len(shared) == 1  # different subprocess
+        """
+        )
+        result = pytester.runpytest("-v")
+        result.assert_outcomes(passed=2)

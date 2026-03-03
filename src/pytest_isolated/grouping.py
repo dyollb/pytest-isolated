@@ -1,4 +1,36 @@
-"""Test grouping logic for pytest-isolated."""
+"""Test grouping logic for pytest-isolated.
+
+Marker Precedence Rules
+-----------------------
+Following pytest's "closest marker wins" convention
+(``get_closest_marker`` returns function > class > module), the
+grouping logic resolves overlapping ``@pytest.mark.isolated`` markers
+as follows:
+
+1. **Explicit ``group`` always wins.**
+   If the *closest* marker carries a ``group`` parameter (positional or
+   keyword), that group name is used regardless of scope.
+
+2. **Function-level marker wins (closest scope).**
+   A function decorated with ``@pytest.mark.isolated`` — even inside an
+   already-isolated class or module — runs in its **own** subprocess
+   (keyed by ``nodeid``).  This matches pytest's standard precedence:
+   the closest marker takes effect.
+
+3. **Class scope groups methods.**
+   ``@pytest.mark.isolated`` on a class (without a function-level
+   override) groups all its methods into one subprocess (keyed
+   ``module::class``).
+
+4. **Module scope groups functions.**
+   ``pytestmark = pytest.mark.isolated`` groups all functions and
+   un-decorated class methods in the module into one subprocess
+   (keyed by module path).
+
+5. **Timeout is a group-level concept.**
+   The ``timeout`` parameter applies to the entire subprocess group.
+   Use ``pytest-timeout`` for per-test timeouts within a group.
+"""
 
 from __future__ import annotations
 
@@ -21,8 +53,6 @@ def _has_isolated_marker(obj: Any) -> bool:
 
 def _has_own_isolated_marker(item: pytest.Item) -> bool:
     """Check if item has isolated marker directly on it (not inherited)."""
-    # own_markers contains markers directly applied to this item
-    # (not inherited from class/module)
     return any(m.name == "isolated" for m in item.own_markers)
 
 
@@ -50,7 +80,7 @@ def pytest_collection_modifyitems(
         if not m and not run_all_isolated:
             continue
 
-        # Get group from marker (positional arg, keyword arg, or default)
+        # --- Step 1: explicit group from closest marker wins ---
         group = None
         if m:
             # Support @pytest.mark.isolated("groupname") - positional arg
@@ -60,27 +90,26 @@ def pytest_collection_modifyitems(
             elif "group" in m.kwargs:
                 group = m.kwargs["group"]
 
-        # Default grouping logic
+        # --- Step 2: default grouping — closest scope wins ---
         if group is None:
             # If --isolated flag is used (no explicit marker), use unique nodeid
             if not m:
                 group = item.nodeid
-            # Check if marker was applied to a class or module
             elif isinstance(item, pytest.Function):
-                # If function has its own explicit marker (not inherited),
-                # use unique nodeid unless a group was specified
+                # Closest wins: function-level marker takes priority
                 if _has_own_isolated_marker(item):
+                    # Function has its own @isolated → own subprocess
                     group = item.nodeid
                 elif item.cls is not None and _has_isolated_marker(item.cls):
-                    # Group by class name (module::class)
+                    # Class scope: group by class (module::class)
                     parts = item.nodeid.split("::")
                     group = "::".join(parts[:2]) if len(parts) >= 3 else item.nodeid
                 elif _has_isolated_marker(item.module):
-                    # Group by module name (first part of nodeid)
+                    # Module scope: group by module path
                     parts = item.nodeid.split("::")
                     group = parts[0]
                 else:
-                    # Explicit marker on function uses unique nodeid
+                    # Marker on function only: own subprocess
                     group = item.nodeid
             else:
                 # Non-Function items use unique nodeid
