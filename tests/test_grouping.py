@@ -217,9 +217,12 @@ def test_module_marker_failing_test_log_in_correct_node(pytester: Pytester):
     test_fail = tests_by_name["test_fail"]
     failure = test_fail.find("failure")
     assert failure is not None, "test_fail should have a failure element"
-    failure_text = failure.text or ""
-    assert "Expected failure" in failure_text, (
-        f"Failure message should contain 'Expected failure', got: {failure_text}"
+    # Check both .text and attrib["message"] — pytest puts the short message
+    # in the attribute and the full traceback in the element text, but which
+    # one carries the assertion message can vary by junit_family / version.
+    failure_content = (failure.text or "") + failure.attrib.get("message", "")
+    assert "Expected failure" in failure_content, (
+        f"Failure should contain 'Expected failure', got: {failure_content}"
     )
     # Verify stdout is captured
     system_out = test_fail.find("system-out")
