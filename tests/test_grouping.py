@@ -279,11 +279,9 @@ def test_overlapping_module_and_function_markers(pytester: Pytester):
     )
 
     result = pytester.runpytest("-v")
-
-    # Tests should pass (each runs only once)
     result.assert_outcomes(passed=3)
 
-    # Check that each test appears only once in output
+    # Sanity check: each test appears exactly once in output
     output = result.stdout.str()
     assert output.count("test_module_marker_only PASSED") == 1
     assert output.count("test_both_markers PASSED") == 1
