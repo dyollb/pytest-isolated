@@ -141,6 +141,14 @@ def test_two():
     pass
 ```
 
+### Marker Precedence
+
+When `@pytest.mark.isolated` appears at multiple scopes, the **closest marker wins** (following pytest's standard `get_closest_marker` convention):
+
+1. **Explicit `group` always wins.** `@pytest.mark.isolated(group="name")` uses that group regardless of scope.
+1. **Function > class > module.** A function-level `@pytest.mark.isolated` breaks out of any class or module group into its own subprocess.
+1. **Class > module.** A class marker groups its methods together, even inside a module with `pytestmark`.
+
 ## Configuration
 
 ### Command Line
