@@ -58,7 +58,7 @@ jobs:
     if: ${{ always() && needs.test.result == 'failure' }}
     steps:
       - name: Create issue on failure
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const title = `Scheduled tests failed on ${new Date().toISOString().split('T')[0]}`;
