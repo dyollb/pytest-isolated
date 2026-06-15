@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
+import shlex
 from typing import Final
 
 import pytest
@@ -19,33 +22,126 @@ DEFAULT_TIMEOUT: Final = 300
 CONFIG_ATTR_GROUPS: Final = "_subprocess_groups"
 CONFIG_ATTR_GROUP_TIMEOUTS: Final = "_subprocess_group_timeouts"
 
-# Options that should be forwarded to subprocess (flags without values)
-_FORWARD_FLAGS: Final = {
-    "-v",
-    "--verbose",
-    "-q",
-    "--quiet",
-    "-l",
-    "--showlocals",
-    "--strict-markers",
-    "--strict-config",
-    "-x",  # exit on first failure
-    "--exitfirst",
-    # Note: -s is NOT forwarded. Child's capture mode is determined by checking
-    # config.getoption("capture") and explicitly setting -s or --capture=tee-sys.
-    # Note: --pdb is NOT forwarded. Tests run in subprocess cannot use interactive
-    # debugger. When --pdb is detected, isolation is automatically disabled.
+# Incompatible pytest options (cannot be forwarded to subprocess).
+# Forward all other options by default (blacklist approach).
+_INCOMPATIBLE_OPTIONS: Final = {
+    # Interactive/Debugger — require terminal input, unavailable in subprocess
+    "--pdb": "requires interactive debugger access",
+    "--pdbcls": "requires interactive debugger access",
+    "--trace": "requires interactive debugger access",
+    "--full-trace": "tied to interactive exception display",
+    # Import/Discovery — affects module resolution differently in parent vs child
+    "--confcutdir": "conftest search path differs between parent and child",
+    "--noconftest": "parent and child need conftest for consistency",
+    "--collect-in-virtualenv": "virtualenv detection may differ per process",
+    # Caching/State — options that depend on child state remain incompatible
+    "--nf": "file modification times differ between parent and child",
+    "--new-first": "file modification times differ between parent and child",
+    "--sw": "stepwise state tracking lost across subprocess boundary",
+    "--stepwise": "stepwise state tracking lost across subprocess boundary",
+    "--sw-skip": "stepwise state tracking lost across subprocess boundary",
+    "--sw-reset": "stepwise state tracking lost across subprocess boundary",
+    "--cache-show": "shows only parent's cache, not subprocess cache",
+    "--cache-clear": "clears parent cache only, subprocess cache unaffected",
+    # Configuration — config file selection must stay parent/child aligned
+    "-c": "parent and child must use same config file",
+    "--config-file": "parent and child must use same config file",
+    # Fixture/Execution — prevent test execution or affect fixture scope
+    "--setup-only": "setup-only prevents test execution in child",
+    "--setup-plan": "setup-plan prevents test execution in child",
+    # Debug pytest — incomplete debug info from parent only
+    "--trace-config": "traces parent's conftest, not subprocess's",
+    "--debug": "subprocess debug output may be lost",
+    # xfail handling
+    "--runxfail": "xfail handling inconsistent between parent and child",
 }
 
-# Options that should be forwarded to subprocess (options with values)
-_FORWARD_OPTIONS_WITH_VALUE: Final = {
-    "--tb",  # traceback style
-    "-r",  # show extra test summary info
-    "--timeout",  # pytest-timeout plugin timeout value
-    # Note: --capture is NOT forwarded. Child uses tee-sys by default, unless user
-    # specifies -s/--capture=no (which is respected). Parent's --capture controls
-    # what the user sees.
+# Subset of _INCOMPATIBLE_OPTIONS that consume a following value token.
+_INCOMPATIBLE_OPTIONS_WITH_VALUE: Final = {
+    "--pdbcls",
+    "--confcutdir",
+    "-c",
+    "--config-file",
+    "--debug",
 }
+
+# Parent-handled flags (no value) — resolved before subprocess split, not forwarded.
+_PARENT_HANDLED_FLAGS: Final = {
+    "--co",
+    "--collect-only",
+    "--pyargs",
+    "--keep-duplicates",
+    "--fixtures",
+    "--funcargs",
+    "--fixtures-per-test",
+    "--lf",
+    "--last-failed",
+    "--ff",
+    "--failed-first",
+    "-s",
+    "--isolated",
+    "--no-isolation",
+}
+
+# Parent-handled options that consume a following value token.
+_PARENT_HANDLED_WITH_VALUE: Final = {
+    "--ignore",
+    "--ignore-glob",
+    "--deselect",
+    "--capture",
+    "--isolated-timeout",
+}
+
+# Forwarded options that consume a following value token (separate form: --opt value).
+_FORWARDED_OPTIONS_WITH_VALUE: Final = {
+    "-o",
+    "--override-ini",
+    "-p",
+    "--tb",
+    "-r",
+    "--maxfail",
+    "-k",
+    "-m",
+    "--import-mode",
+    "--rootdir",
+    "--basetemp",
+    "--durations",
+    "--durations-min",
+    "--junitxml",
+    "--timeout",
+}
+
+
+def _validate_isolation_compatibility(config: pytest.Config) -> None:
+    """Check for incompatible options when isolation is requested.
+
+    Raises UsageError if incompatible option is explicitly passed.
+    Also checks PYTEST_ADDOPTS environment variable.
+    """
+    # Get all args passed on CLI
+    cli_args = config.invocation_params.args
+
+    # Collect all args including from PYTEST_ADDOPTS env var
+    all_args = list(cli_args)
+    pytest_addopts = os.environ.get("PYTEST_ADDOPTS", "")
+    if pytest_addopts:
+        # Invalid shell syntax; let pytest handle it
+        with contextlib.suppress(ValueError):
+            all_args.extend(shlex.split(pytest_addopts))
+
+    # Check for incompatible options
+    for arg in all_args:
+        # Handle --option=value format
+        option = arg.split("=")[0] if "=" in arg else arg
+
+        if option in _INCOMPATIBLE_OPTIONS:
+            reason = _INCOMPATIBLE_OPTIONS[option]
+            msg = (
+                f"Option '{option}' is incompatible with @pytest.mark.isolated: "
+                f"{reason}. Use --no-isolation to disable isolation for this run, "
+                f"or remove the option."
+            )
+            raise pytest.UsageError(msg)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

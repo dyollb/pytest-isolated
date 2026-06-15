@@ -3,6 +3,9 @@
 Tests command-line options and plugin configuration.
 """
 
+import contextlib
+import os
+import sys
 import textwrap
 
 from pytest import Pytester
@@ -222,3 +225,281 @@ def test_failed_first_with_isolated_tests(pytester: Pytester):
     assert output.index("test_fail FAILED") < output.index("test_good1 PASSED"), (
         "test_fail should run before test_good1 with --ff"
     )
+
+
+# Phase 1.5: Tests for PYTEST_ADDOPTS support and incompatible options
+
+
+def test_custom_option_forwarded_to_subprocess(pytester: Pytester):
+    """Test that custom pytest plugin options are forwarded to subprocess (issue #48).
+
+    This tests the new blacklist-based forwarding approach: custom options should
+    be forwarded by default unless explicitly blacklisted.
+    """
+    # Add a custom option via conftest
+    conftest_code = textwrap.dedent(
+        """
+        import pytest
+
+        def pytest_addoption(parser):
+            parser.addoption(
+                "--eval-solution-path",
+                action="store",
+                default=None,
+                help="Path to evaluation solution",
+            )
+
+        @pytest.fixture
+        def eval_path(request):
+            return request.config.getoption("--eval-solution-path")
+        """
+    )
+    pytester.makeconftest(conftest_code)
+
+    pytester.makepyfile(
+        """
+        import pytest
+
+        def test_non_isolated_with_option(eval_path):
+            assert eval_path == "/path/to/solution", (
+                f"Expected /path/to/solution, got {eval_path}"
+            )
+
+        @pytest.mark.isolated
+        def test_isolated_with_option(eval_path):
+            assert eval_path == "/path/to/solution", (
+                f"Expected /path/to/solution, got {eval_path}"
+            )
+        """
+    )
+
+    # Run with the custom option
+    result = pytester.runpytest("-v", "--eval-solution-path=/path/to/solution")
+    result.assert_outcomes(passed=2)
+
+
+def test_pytest_addopts_env_var_forwarded(pytester: Pytester):
+    """Test that PYTEST_ADDOPTS environment variable is inherited in subprocess.
+
+    PYTEST_ADDOPTS is a standard pytest feature for passing default options.
+    The subprocess should inherit it from the parent's environment.
+    """
+    pytester.makeconftest(
+        textwrap.dedent(
+            """
+            import pytest
+
+            def pytest_addoption(parser):
+                parser.addoption(
+                    "--custom-flag",
+                    action="store_true",
+                    default=False,
+                )
+
+            @pytest.fixture
+            def custom_enabled(request):
+                return request.config.getoption("--custom-flag")
+            """
+        )
+    )
+
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated
+        def test_with_env_option(custom_enabled):
+            assert custom_enabled is True
+        """
+    )
+
+    # Use monkeypatch to set PYTEST_ADDOPTS in the environment
+    original_addopts = os.environ.get("PYTEST_ADDOPTS")
+    try:
+        os.environ["PYTEST_ADDOPTS"] = "--custom-flag"
+        result = pytester.runpytest("-v")
+        result.assert_outcomes(passed=1)
+    finally:
+        if original_addopts is None:
+            os.environ.pop("PYTEST_ADDOPTS", None)
+        else:
+            os.environ["PYTEST_ADDOPTS"] = original_addopts
+
+
+def test_incompatible_option_collect_only_error(pytester: Pytester):
+    """Test that --collect-only is supported with isolated tests."""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated
+        def test_example():
+            assert True
+        """
+    )
+
+    # Run with --collect-only - should succeed (parent-handled, no forwarding)
+    result = pytester.runpytest("-v", "--collect-only")
+    assert result.ret == 0
+    output = result.stdout.str()
+    assert "collected" in output
+
+
+def test_incompatible_option_lf_error(pytester: Pytester):
+    """Test that --lf (last-failed) is supported with isolated tests."""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated
+        def test_example():
+            assert True
+        """
+    )
+
+    # Run with --lf - should succeed (handled by parent process)
+    result = pytester.runpytest("-v", "--lf")
+    assert result.ret == 0
+
+
+def test_incompatible_option_with_no_isolation_allowed(pytester: Pytester):
+    """Test that incompatible options are allowed when --no-isolation is used.
+
+    When users opt out of isolation, they should be able to use any option,
+    including those that are incompatible with isolation.
+    """
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.mark.isolated
+        def test_example():
+            assert True
+        """
+    )
+
+    # Run with --no-isolation --pdb - should NOT error
+    # (--pdb is normally incompatible, but allowed with --no-isolation)
+    result = pytester.runpytest("-v", "--no-isolation", "--pdb")
+    # With --no-isolation, we skip tests that require interaction
+    # So exit code 0 is expected (no tests actually run with pdb without input)
+    assert result.ret == 0
+
+
+def test_setup_show_with_isolated_tests(pytester: Pytester):
+    """Test that --setup-show displays fixture setup for isolated tests (#47)."""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.fixture
+        def some_fixture():
+            return "value"
+
+        @pytest.mark.isolated
+        def test_isolated_with_fixture(some_fixture):
+            assert some_fixture == "value"
+        """
+    )
+
+    result = pytester.runpytest("-v", "--setup-show")
+    result.assert_outcomes(passed=1)
+    output = result.stdout.str()
+    assert "SETUP" in output
+    assert "some_fixture" in output
+
+
+def test_p_option_plugin_loaded_in_isolated_subprocess(pytester: Pytester):
+    """Test that -p loaded plugins are available in isolated subprocesses."""
+
+    pytester.path.joinpath("myplugin.py").write_text(
+        textwrap.dedent(
+            """
+            import pytest
+
+            @pytest.fixture
+            def plugin_fixture():
+                return "from-plugin"
+            """
+        )
+    )
+    pytester.makepyfile(
+        test_sample="""
+        import pytest
+
+        @pytest.mark.isolated
+        def test_uses_plugin_fixture(plugin_fixture):
+            assert plugin_fixture == "from-plugin"
+        """,
+    )
+
+    original_pythonpath = os.environ.get("PYTHONPATH")
+    inserted_path = str(pytester.path)
+    os.environ["PYTHONPATH"] = (
+        inserted_path
+        if not original_pythonpath
+        else f"{inserted_path}{os.pathsep}{original_pythonpath}"
+    )
+    sys.path.insert(0, inserted_path)
+    try:
+        result = pytester.runpytest("-v", "-p", "myplugin")
+        result.assert_outcomes(passed=1)
+    finally:
+        if original_pythonpath is None:
+            os.environ.pop("PYTHONPATH", None)
+        else:
+            os.environ["PYTHONPATH"] = original_pythonpath
+        with contextlib.suppress(ValueError):
+            sys.path.remove(inserted_path)
+
+
+def test_continue_on_collection_errors_with_isolated_tests(pytester: Pytester):
+    """Test that parent collection can continue and still run isolated tests."""
+    pytester.makepyfile(
+        test_broken="""
+        raise RuntimeError("collection boom")
+        """,
+        test_isolated_ok="""
+        import pytest
+
+        @pytest.mark.isolated
+        def test_ok():
+            assert True
+        """,
+    )
+
+    result = pytester.runpytest("-v", "--continue-on-collection-errors")
+    output = result.stdout.str() + result.stderr.str()
+    assert "test_ok PASSED" in output
+    assert "collection boom" in output
+
+
+def test_import_mode_forwarded_to_isolated_subprocess(pytester: Pytester):
+    """Test that --import-mode is forwarded to isolated subprocesses."""
+    pkg = pytester.mkdir("pkg")
+    (pkg / "__init__.py").write_text("")
+    (pkg / "helpers.py").write_text(
+        textwrap.dedent(
+            """
+            def helper_value():
+                return "ok"
+            """
+        )
+    )
+    (pkg / "test_import_mode.py").write_text(
+        textwrap.dedent(
+            """
+            import pytest
+            from .helpers import helper_value
+
+            @pytest.mark.isolated
+            def test_uses_relative_import():
+                assert helper_value() == "ok"
+            """
+        )
+    )
+
+    result = pytester.runpytest(
+        "-v", "--import-mode=importlib", "pkg/test_import_mode.py"
+    )
+    result.assert_outcomes(passed=1)

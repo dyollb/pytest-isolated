@@ -40,7 +40,12 @@ from typing import Any
 
 import pytest
 
-from .config import CONFIG_ATTR_GROUP_TIMEOUTS, CONFIG_ATTR_GROUPS, SUBPROC_ENV
+from .config import (
+    CONFIG_ATTR_GROUP_TIMEOUTS,
+    CONFIG_ATTR_GROUPS,
+    SUBPROC_ENV,
+    _validate_isolation_compatibility,
+)
 
 
 def _has_isolated_marker(obj: Any) -> bool:
@@ -85,6 +90,15 @@ def pytest_collection_modifyitems(
 
     # If --isolated is set, run all tests in isolation
     run_all_isolated = config.getoption("isolated", False)
+
+    # Check if there are any @pytest.mark.isolated tests
+    has_isolated_tests = run_all_isolated or any(
+        item.get_closest_marker("isolated") for item in items
+    )
+
+    # Validate incompatible options early if isolation will be used
+    if has_isolated_tests:
+        _validate_isolation_compatibility(config)
 
     groups: OrderedDict[str, list[pytest.Item]] = OrderedDict()
     group_timeouts: dict[str, int | None] = {}  # Track timeout per group
