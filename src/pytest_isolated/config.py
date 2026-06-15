@@ -56,6 +56,61 @@ _INCOMPATIBLE_OPTIONS: Final = {
     "--runxfail": "xfail handling inconsistent between parent and child",
 }
 
+# Subset of _INCOMPATIBLE_OPTIONS that consume a following value token.
+_INCOMPATIBLE_OPTIONS_WITH_VALUE: Final = {
+    "--pdbcls",
+    "--confcutdir",
+    "-c",
+    "--config-file",
+    "--debug",
+}
+
+# Parent-handled flags (no value) — resolved before subprocess split, not forwarded.
+_PARENT_HANDLED_FLAGS: Final = {
+    "--co",
+    "--collect-only",
+    "--pyargs",
+    "--keep-duplicates",
+    "--fixtures",
+    "--funcargs",
+    "--fixtures-per-test",
+    "--lf",
+    "--last-failed",
+    "--ff",
+    "--failed-first",
+    "-s",
+    "--isolated",
+    "--no-isolation",
+}
+
+# Parent-handled options that consume a following value token.
+_PARENT_HANDLED_WITH_VALUE: Final = {
+    "--ignore",
+    "--ignore-glob",
+    "--deselect",
+    "--capture",
+    "--isolated-timeout",
+}
+
+# Forwarded options that consume a following value token (separate form: --opt value).
+_FORWARDED_OPTIONS_WITH_VALUE: Final = {
+    "-o",
+    "--override-ini",
+    "-p",
+    "--tb",
+    "-r",
+    "--maxfail",
+    "-k",
+    "-m",
+    "--import-mode",
+    "--rootdir",
+    "--basetemp",
+    "--durations",
+    "--durations-min",
+    "--junitxml",
+    "--timeout",
+}
+
 
 def _validate_isolation_compatibility(config: pytest.Config) -> None:
     """Check for incompatible options when isolation is requested.

@@ -11,11 +11,16 @@ import tempfile
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Literal, NamedTuple, TypeAlias, cast
+from typing import Final, Literal, NamedTuple, TypeAlias, cast
 
 import pytest
 
 from .config import (
+    _FORWARDED_OPTIONS_WITH_VALUE,
+    _INCOMPATIBLE_OPTIONS,
+    _INCOMPATIBLE_OPTIONS_WITH_VALUE,
+    _PARENT_HANDLED_FLAGS,
+    _PARENT_HANDLED_WITH_VALUE,
     CONFIG_ATTR_GROUP_TIMEOUTS,
     CONFIG_ATTR_GROUPS,
     DEFAULT_TIMEOUT,
@@ -50,72 +55,22 @@ class ExecutionContext(NamedTuple):
     session: pytest.Session
 
 
+# Derived from config.py constants — single source of truth for option classification.
+_SKIP_OPTIONS: Final = (
+    set(_INCOMPATIBLE_OPTIONS) | _PARENT_HANDLED_FLAGS | _PARENT_HANDLED_WITH_VALUE
+)
+_OPTIONS_WITH_VALUE: Final = (
+    _INCOMPATIBLE_OPTIONS_WITH_VALUE
+    | _PARENT_HANDLED_WITH_VALUE
+    | _FORWARDED_OPTIONS_WITH_VALUE
+)
+
+
 def _build_forwarded_args(config: pytest.Config) -> list[str]:
     """Forward all args except those explicitly unsupported or parent-resolved."""
 
-    # Options that should NOT be forwarded (parent-handled + incompatible)
-    skip_options = {
-        "--co",
-        "--collect-only",
-        "--pyargs",
-        "--ignore",
-        "--ignore-glob",
-        "--deselect",
-        "--keep-duplicates",
-        "--fixtures",
-        "--funcargs",
-        "--fixtures-per-test",
-        "--lf",
-        "--last-failed",
-        "--ff",
-        "--failed-first",
-        "-s",
-        "--capture",
-        "--isolated",
-        "--isolated-timeout",
-        "--no-isolation",
-        "--pdb",
-        "--pdbcls",
-        "--trace",
-        "--full-trace",
-        "--confcutdir",
-        "--noconftest",
-        "--nf",
-        "--new-first",
-        "--sw",
-        "--stepwise",
-        "--sw-skip",
-        "--sw-reset",
-        "--cache-show",
-        "--cache-clear",
-        "-c",
-        "--config-file",
-        "--setup-only",
-        "--setup-plan",
-        "--trace-config",
-        "--debug",
-        "--runxfail",
-        "--collect-in-virtualenv",
-    }
-
-    # Options that consume a following value token
-    options_with_value = {
-        "-o",
-        "--override-ini",
-        "-p",
-        "--tb",
-        "-r",
-        "--maxfail",
-        "-k",
-        "-m",
-        "--import-mode",
-        "--rootdir",
-        "--basetemp",
-        "--durations",
-        "--durations-min",
-        "--junitxml",
-        "--timeout",
-    }
+    skip_options = _SKIP_OPTIONS
+    options_with_value = _OPTIONS_WITH_VALUE
 
     forwarded_args: list[str] = []
     i = 0
