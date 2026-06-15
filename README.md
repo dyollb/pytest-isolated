@@ -287,6 +287,16 @@ pytest --junitxml=report.xml --durations=10
 
 **Performance**: Subprocess creation adds ~100-500ms per group. Group related tests to minimize overhead. Only mark tests that need isolation.
 
+### CLI Option Compatibility
+
+pytest-isolated uses a forward-by-default (blacklist) model:
+
+- Some options are blocked with a clear `UsageError` when isolation is active.
+- Some options are supported but handled in the parent process (not forwarded).
+- All remaining options (including custom plugin options) are forwarded to children.
+
+See [Incompatible options reference](docs/incompatible-options.md) for the full list and workarounds.
+
 ## Advanced
 
 ### Coverage Integration

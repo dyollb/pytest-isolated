@@ -16,8 +16,6 @@ from typing import Literal, NamedTuple, TypeAlias, cast
 import pytest
 
 from .config import (
-    _FORWARD_FLAGS,
-    _FORWARD_OPTIONS_WITH_VALUE,
     CONFIG_ATTR_GROUP_TIMEOUTS,
     CONFIG_ATTR_GROUPS,
     DEFAULT_TIMEOUT,
@@ -53,32 +51,118 @@ class ExecutionContext(NamedTuple):
 
 
 def _build_forwarded_args(config: pytest.Config) -> list[str]:
-    """Build list of pytest arguments to forward to subprocess."""
+    """Forward all args except those explicitly unsupported or parent-resolved."""
+
+    # Options that should NOT be forwarded (parent-handled + incompatible)
+    skip_options = {
+        "--co",
+        "--collect-only",
+        "--pyargs",
+        "--ignore",
+        "--ignore-glob",
+        "--deselect",
+        "--keep-duplicates",
+        "--fixtures",
+        "--funcargs",
+        "--fixtures-per-test",
+        "--lf",
+        "--last-failed",
+        "--ff",
+        "--failed-first",
+        "-s",
+        "--capture",
+        "--isolated",
+        "--isolated-timeout",
+        "--no-isolation",
+        "--pdb",
+        "--pdbcls",
+        "--trace",
+        "--full-trace",
+        "--confcutdir",
+        "--noconftest",
+        "--nf",
+        "--new-first",
+        "--sw",
+        "--stepwise",
+        "--sw-skip",
+        "--sw-reset",
+        "--cache-show",
+        "--cache-clear",
+        "-c",
+        "--config-file",
+        "--setup-only",
+        "--setup-plan",
+        "--trace-config",
+        "--debug",
+        "--runxfail",
+        "--collect-in-virtualenv",
+    }
+
+    # Options that consume a following value token
+    options_with_value = {
+        "-o",
+        "--override-ini",
+        "-p",
+        "--tb",
+        "-r",
+        "--maxfail",
+        "-k",
+        "-m",
+        "--import-mode",
+        "--rootdir",
+        "--basetemp",
+        "--durations",
+        "--durations-min",
+        "--junitxml",
+        "--timeout",
+    }
+
     forwarded_args: list[str] = []
     i = 0
     args = config.invocation_params.args
+
     while i < len(args):
         arg = args[i]
 
-        # Forward only explicitly allowed options
-        if arg in _FORWARD_FLAGS:
-            forwarded_args.append(arg)
+        # Skip positional selectors
+        if not arg.startswith("-"):
             i += 1
-        elif arg in _FORWARD_OPTIONS_WITH_VALUE:
-            forwarded_args.append(arg)
-            # Next arg is the value - forward it too
-            if i + 1 < len(args):
-                forwarded_args.append(args[i + 1])
-                i += 2
+            continue
+
+        # Handle --opt=value form
+        if "=" in arg:
+            option = arg.split("=")[0]
+            if option not in skip_options:
+                forwarded_args.append(arg)
+            i += 1
+            continue
+
+        # Skip blacklisted options
+        if arg in skip_options:
+            if (
+                arg in options_with_value
+                and i + 1 < len(args)
+                and not args[i + 1].startswith("-")
+            ):
+                i += 2  # Skip option and its value
             else:
                 i += 1
-        elif arg.startswith(tuple(f"{opt}=" for opt in _FORWARD_OPTIONS_WITH_VALUE)):
-            forwarded_args.append(arg)
-            i += 1
+            continue
+
+        # Forward all other options
+        forwarded_args.append(arg)
+
+        # If it takes a value, forward that too
+        if (
+            arg in options_with_value
+            and i + 1 < len(args)
+            and not args[i + 1].startswith("-")
+        ):
+            forwarded_args.append(args[i + 1])
+            i += 2
         else:
-            # Skip everything else (positional args, test paths,
-            # unknown options)
             i += 1
+
     return forwarded_args
 
 
@@ -491,6 +575,18 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         start_time = time.time()
         result = _run_subprocess(cmd, env, group_timeout, subprocess_cwd)
         execution_time = time.time() - start_time
+
+        # --setup-show prints fixture lifecycle to terminal output in child.
+        # Re-emit those lines so users can see setup/teardown info for isolated tests.
+        if config.getoption("setupshow", False) and result.stdout:
+            stdout_text = result.stdout.decode("utf-8", errors="replace")
+            setup_lines = [
+                line
+                for line in stdout_text.splitlines()
+                if "SETUP" in line or "TEARDOWN" in line
+            ]
+            if setup_lines:
+                sys.stdout.write("\n".join(setup_lines) + "\n")
 
         # Parse results
         results = _parse_results(report_path)

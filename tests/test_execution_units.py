@@ -94,7 +94,7 @@ class TestBuildForwardedArgs:
         assert "tests/test_bar.py::test_baz" not in result
 
     def test_excludes_unknown_options(self) -> None:
-        """Test that unknown options are not forwarded."""
+        """Test that unknown options are forwarded by default."""
         config = Mock()
         config.invocation_params.args = [
             "-v",
@@ -106,8 +106,31 @@ class TestBuildForwardedArgs:
         result = _build_forwarded_args(config)
 
         assert "-v" in result
-        assert "--unknown-option" not in result
+        assert "--unknown-option" in result
         assert "--isolated" not in result
+
+    def test_parent_handled_equals_form_not_forwarded(self) -> None:
+        """Test that parent-handled --opt=value options are not forwarded."""
+        config = Mock()
+        config.invocation_params.args = ["--ignore=tests/legacy", "-v"]
+        config._parser = None
+
+        result = _build_forwarded_args(config)
+
+        assert "--ignore=tests/legacy" not in result
+        assert "-v" in result
+
+    def test_unknown_flag_does_not_consume_positional_selector(self) -> None:
+        """Test unknown flags don't swallow positional test selectors as values."""
+        config = Mock()
+        config.invocation_params.args = ["--custom-flag", "tests/test_x.py", "-v"]
+        config._parser = None
+
+        result = _build_forwarded_args(config)
+
+        assert "--custom-flag" in result
+        assert "tests/test_x.py" not in result
+        assert "-v" in result
 
     def test_handles_empty_args(self) -> None:
         """Test handling of empty args list."""
