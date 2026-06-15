@@ -55,22 +55,19 @@ class ExecutionContext(NamedTuple):
     session: pytest.Session
 
 
-# Derived from config.py constants — single source of truth for option classification.
-_SKIP_OPTIONS: Final = (
-    set(_INCOMPATIBLE_OPTIONS) | _PARENT_HANDLED_FLAGS | _PARENT_HANDLED_WITH_VALUE
-)
-_OPTIONS_WITH_VALUE: Final = (
-    _INCOMPATIBLE_OPTIONS_WITH_VALUE
-    | _PARENT_HANDLED_WITH_VALUE
-    | _FORWARDED_OPTIONS_WITH_VALUE
-)
-
-
 def _build_forwarded_args(config: pytest.Config) -> list[str]:
     """Forward all args except those explicitly unsupported or parent-resolved."""
 
-    skip_options = _SKIP_OPTIONS
-    options_with_value = _OPTIONS_WITH_VALUE
+    # Not forwarded
+    skip_options: Final = (
+        set(_INCOMPATIBLE_OPTIONS) | _PARENT_HANDLED_FLAGS | _PARENT_HANDLED_WITH_VALUE
+    )
+    # Key value options: here we expect a value
+    options_with_value: Final = (
+        _INCOMPATIBLE_OPTIONS_WITH_VALUE
+        | _PARENT_HANDLED_WITH_VALUE
+        | _FORWARDED_OPTIONS_WITH_VALUE
+    )
 
     forwarded_args: list[str] = []
     i = 0
