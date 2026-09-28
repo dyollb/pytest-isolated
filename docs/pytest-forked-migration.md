@@ -14,6 +14,7 @@ Quick reference for users familiar with pytest-forked.
 def test_crash():
     pass
 
+
 # pytest-isolated
 @pytest.mark.isolated
 def test_crash():
@@ -37,8 +38,10 @@ class TestDatabase:
     def test_setup(self): ...
     def test_query(self): ...
 
+
 # Works in both plugins
 import pytest
+
 pytestmark = pytest.mark.forked  # or pytest.mark.isolated
 ```
 

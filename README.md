@@ -40,13 +40,16 @@ pip install pytest-isolated
 @pytest.mark.isolated
 def test_with_clean_state():
     import os
+
     os.environ["DEBUG"] = "true"
     # Other tests won't see this change
+
 
 # Example 2: Crash protection
 @pytest.mark.isolated
 def test_that_crashes():
     import ctypes
+
     ctypes.string_at(0)  # Crash is contained!
 ```
 
@@ -73,6 +76,7 @@ Mark tests to run in isolated subprocesses:
 ```python
 import pytest
 
+
 @pytest.mark.isolated
 def test_isolated():
     # Runs in a fresh subprocess
@@ -87,10 +91,12 @@ Tests with the same group run together in one subprocess:
 def test_one():
     shared_state.append(1)
 
+
 @pytest.mark.isolated(group="mygroup")
 def test_two():
     # Sees state from test_one
     assert len(shared_state) == 2
+
 
 # Or using positional argument
 @pytest.mark.isolated("mygroup")
@@ -132,9 +138,11 @@ import pytest
 
 pytestmark = pytest.mark.isolated
 
+
 def test_one():
     # Runs in isolated subprocess
     pass
+
 
 def test_two():
     # Shares subprocess with test_one
@@ -195,12 +203,15 @@ Prevent environment variable and configuration changes from leaking between test
 @pytest.mark.isolated
 def test_modifies_environ():
     import os
+
     os.environ["MY_VAR"] = "value"
     # Won't affect other tests
+
 
 @pytest.mark.isolated
 def test_clean_environ():
     import os
+
     assert "MY_VAR" not in os.environ  # Fresh environment
 ```
 
@@ -212,8 +223,10 @@ Group tests that share singleton state, or isolate them completely:
 @pytest.mark.isolated(group="singleton_tests")
 def test_singleton_init():
     from myapp import DatabaseConnection
+
     db = DatabaseConnection.get_instance()
     assert db is not None
+
 
 @pytest.mark.isolated(group="singleton_tests")
 def test_singleton_reuse():
@@ -229,6 +242,7 @@ Safely modify signal handlers and other process-level settings:
 @pytest.mark.isolated
 def test_signal_handlers():
     import signal
+
     signal.signal(signal.SIGTERM, custom_handler)
     # Won't interfere with pytest or other tests
 ```
@@ -257,6 +271,7 @@ Isolate tests that might crash from C code:
 @pytest.mark.isolated
 def test_numpy_operation():
     import numpy as np
+
     # If this segfaults, other tests still run
     result = np.array([1, 2, 3])
     assert len(result) == 3
