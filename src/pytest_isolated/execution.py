@@ -127,6 +127,7 @@ def _handle_xfail_crash(
 
 
 def _handle_timeout(
+    *,
     timed_out: bool,
     group_name: str,
     group_timeout: int,
@@ -152,6 +153,7 @@ def _handle_timeout(
 
 
 def _handle_collection_crash(
+    *,
     returncode: int,
     results: TestResults,
     group_name: str,
@@ -478,19 +480,24 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
             continue
 
         if _handle_timeout(
-            result.timed_out,
-            group_name,
-            group_timeout,
-            execution_time,
-            group_items,
-            ctx,
-            result.stdout,
-            result.stderr,
+            timed_out=result.timed_out,
+            group_name=group_name,
+            group_timeout=group_timeout,
+            execution_time=execution_time,
+            group_items=group_items,
+            ctx=ctx,
+            stdout=result.stdout,
+            stderr=result.stderr,
         ):
             continue
 
         if _handle_collection_crash(
-            result.returncode, results, group_name, result.stderr, group_items, ctx
+            returncode=result.returncode,
+            results=results,
+            group_name=group_name,
+            proc_stderr=result.stderr,
+            group_items=group_items,
+            ctx=ctx,
         ):
             continue
 
