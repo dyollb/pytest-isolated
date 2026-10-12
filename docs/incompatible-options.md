@@ -7,9 +7,15 @@ Scope: isolation is active when using `@pytest.mark.isolated` or `--isolated`.
 
 Implementation references:
 
-- hard-block validation: `_validate_isolation_compatibility` in `src/pytest_isolated/config.py`
-- block list source: `_INCOMPATIBLE_OPTIONS` in `src/pytest_isolated/config.py`
-- forwarding behavior: `_build_forwarded_args` in `src/pytest_isolated/execution.py`
+- policy table (blocked + parent-handled): `BLOCKED_OPTIONS` /
+  `PARENT_HANDLED_OPTIONS` in `src/pytest_isolated/forwarding.py`
+- hard-block validation (single enforcement point, covers CLI and
+  `PYTEST_ADDOPTS`): `validate_isolation_compatibility` in
+  `src/pytest_isolated/forwarding.py`
+- child argument interface: `child_args` in `src/pytest_isolated/forwarding.py`
+
+A test keeps the category lists in this page and the policy table in sync
+(`TestDocsMatchTable` in `tests/test_child_args.py`).
 
 ## Category A: Unsupported with isolation (hard error)
 
@@ -69,21 +75,27 @@ the parent process and are not forwarded to child subprocesses.
   `--deselect`, `--keep-duplicates`
 - fixture listing options:
   `--fixtures`, `--funcargs`, `--fixtures-per-test`
-- fixture tracing option:
-  `--setup-show` (capture presentation is handled in parent)
 - `--lf`, `--last-failed`
 - `--ff`, `--failed-first`
 - `-s`, `--capture`, `--capture=...` (capture mode is applied when building
   the subprocess command)
+- `--rootdir` (the parent's resolved root directory is stated exactly once on
+  the child command line; user-supplied forms are replaced)
 - internal plugin flags: `--isolated`, `--isolated-timeout`, `--no-isolation`
 - positional test selectors/paths from CLI (children receive resolved nodeids)
 
 ## Category C: Forwarded to child by default
 
 All other options are forwarded, including custom/third-party plugin options.
+Options that consume a value are forwarded with their value in both
+`--opt value` and `--opt=value` token forms; how many values an option takes
+is read from pytest's own parsed option table, so plugin options never need
+to be registered anywhere for correct forwarding.
 
 Examples include plugin loading and plugin-defined options such as `-p`,
-`--disable-plugin-autoload`, and `--continue-on-collection-errors`.
+`--disable-plugin-autoload`, and `--continue-on-collection-errors`, as well as
+`--setup-show` (forwarded to the child; the parent re-prints the child's
+SETUP/TEARDOWN lines so fixture tracing is visible for isolated tests).
 
 This is the default blacklist model: if an option is not in Category A and not
 explicitly parent-handled in Category B, it is forwarded.

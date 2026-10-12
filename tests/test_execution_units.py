@@ -1,4 +1,6 @@
-"""Unit tests for execution module helper functions."""
+"""Unit tests for execution module helper functions.
+
+Arg-forwarding tests live in tests/test_child_args.py (the child_args interface)."""
 
 import json
 from pathlib import Path
@@ -7,139 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from pytest_isolated.execution import (
-    _build_forwarded_args,
-    _detect_crashed_tests,
-    _parse_results,
-)
-
-
-class TestBuildForwardedArgs:
-    """Test _build_forwarded_args function."""
-
-    @pytest.mark.parametrize(
-        ("flags", "expected_forwarded"),
-        [
-            (["-v", "tests/"], ["-v"]),
-            (["-x", "tests/"], ["-x"]),
-            (["-v", "-v", "-v"], ["-v", "-v", "-v"]),
-            (["-q", "-l"], ["-q", "-l"]),
-            (["--verbose", "--exitfirst"], ["--verbose", "--exitfirst"]),
-        ],
-    )
-    def test_forwards_flag_options(
-        self, flags: list[str], expected_forwarded: list[str]
-    ) -> None:
-        """Test that flags are forwarded correctly."""
-        config = Mock()
-        config.invocation_params.args = flags
-
-        result = _build_forwarded_args(config)
-
-        assert result == expected_forwarded
-
-    @pytest.mark.parametrize(
-        ("args", "expected_option", "expected_value"),
-        [
-            (["--tb", "short", "tests/"], "--tb", "short"),
-            (["-r", "fE"], "-r", "fE"),
-        ],
-    )
-    def test_forwards_options_with_values_separate(
-        self, args: list[str], expected_option: str, expected_value: str
-    ) -> None:
-        """Test that options with values are forwarded."""
-        config = Mock()
-        config.invocation_params.args = args
-
-        result = _build_forwarded_args(config)
-
-        assert expected_option in result
-        assert expected_value in result
-        opt_idx = result.index(expected_option)
-        assert result[opt_idx + 1] == expected_value
-
-    @pytest.mark.parametrize(
-        ("args", "expected"),
-        [
-            (["--tb=short", "tests/"], ["--tb=short"]),
-            (["-r=fE", "tests/"], ["-r=fE"]),
-        ],
-    )
-    def test_forwards_options_with_values_combined(
-        self, args: list[str], expected: list[str]
-    ) -> None:
-        """Test that combined options like --tb=short are forwarded."""
-        config = Mock()
-        config.invocation_params.args = args
-
-        result = _build_forwarded_args(config)
-
-        for exp in expected:
-            assert exp in result
-
-    def test_excludes_test_paths(self) -> None:
-        """Test that positional test paths are not forwarded."""
-        config = Mock()
-        config.invocation_params.args = [
-            "-v",
-            "tests/test_foo.py",
-            "tests/test_bar.py::test_baz",
-        ]
-
-        result = _build_forwarded_args(config)
-
-        assert "-v" in result
-        assert "tests/test_foo.py" not in result
-        assert "tests/test_bar.py::test_baz" not in result
-
-    def test_excludes_unknown_options(self) -> None:
-        """Test that unknown options are forwarded by default."""
-        config = Mock()
-        config.invocation_params.args = [
-            "-v",
-            "--unknown-option",
-            "--isolated",
-            "value",
-        ]
-
-        result = _build_forwarded_args(config)
-
-        assert "-v" in result
-        assert "--unknown-option" in result
-        assert "--isolated" not in result
-
-    def test_parent_handled_equals_form_not_forwarded(self) -> None:
-        """Test that parent-handled --opt=value options are not forwarded."""
-        config = Mock()
-        config.invocation_params.args = ["--ignore=tests/legacy", "-v"]
-        config._parser = None
-
-        result = _build_forwarded_args(config)
-
-        assert "--ignore=tests/legacy" not in result
-        assert "-v" in result
-
-    def test_unknown_flag_does_not_consume_positional_selector(self) -> None:
-        """Test unknown flags don't swallow positional test selectors as values."""
-        config = Mock()
-        config.invocation_params.args = ["--custom-flag", "tests/test_x.py", "-v"]
-        config._parser = None
-
-        result = _build_forwarded_args(config)
-
-        assert "--custom-flag" in result
-        assert "tests/test_x.py" not in result
-        assert "-v" in result
-
-    def test_handles_empty_args(self) -> None:
-        """Test handling of empty args list."""
-        config = Mock()
-        config.invocation_params.args = []
-
-        result = _build_forwarded_args(config)
-
-        assert result == []
+from pytest_isolated.execution import _detect_crashed_tests, _parse_results
 
 
 class TestParseResults:
