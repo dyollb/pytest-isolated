@@ -25,28 +25,28 @@ One deep module at the parent→child seam: a single function `child_args(config
 ## User Stories
 
 1. As a pytest user with third-party plugins, I want my plugin's options (e.g. `--slowest 5`) forwarded to isolated subprocesses with their values intact, so that plugin behavior applies inside isolated tests just as it does in normal runs.
-2. As a pytest user, I want options in `--opt=value` form forwarded unchanged, so that my preferred invocation style works with isolation.
-3. As a pytest user, I want short flag clusters (e.g. `-qxl`) forwarded, so that compact invocations still isolate correctly.
-4. As a pytest user, I want options whose values start with `-` (e.g. `-k "-not_this"`) forwarded as option+value, so that negated expressions aren't dropped from the child run.
-5. As a pytest user, I want `PYTEST_ADDOPTS` options to reach the child exactly as CLI options do, so that my CI-configured defaults apply to isolated tests.
-6. As a pytest user, I want a blocked option specified via `PYTEST_ADDOPTS` rejected with the same error as on the CLI, so that there is no way to sneak an unsupported option past validation.
-7. As a pytest user, I want a clear `UsageError` naming the blocked option, its reason, and the escape hatch (`--no-isolation`), so that I can fix my invocation in one step.
-8. As a pytest user, I want plugin-internal flags (`--isolated`, `--isolated-timeout`, `--no-isolation`) consumed by the parent and never forwarded, so that the child doesn't recursively re-enable isolation.
-9. As a pytest user, I want parent-resolved selection options (`--ignore`, `--deselect`, `--lf`, …) NOT forwarded, so that the child runs exactly the nodeids the parent selected, without double-filtering.
-10. As a pytest user, I want positional test paths never forwarded, so that the child receives only the parent-resolved nodeids.
-11. As a pytest user with an exotic plugin option the maintainer never anticipated, I want my option forwarded by default (blacklist model), so that isolation works with plugins released after pytest-isolated.
-12. As a plugin author, I want a custom option I registered in my conftest (`--eval-solution-path`) forwarded in both `--opt value` and `--opt=value` forms, so that issue #48's fix never regresses for any token form.
-13. As a maintainer, I want one policy table (name → kind → reason) instead of five scattered sets, so that adding or reclassifying an option is a single-row edit.
-14. As a maintainer, I want option-value arity derived from pytest's parser, so that the class of "value dropped/misaligned" bugs is structurally impossible.
-15. As a maintainer, I want blocking validation and forwarding to consult the same table rows, so that #36-style redundant gates can never be needed again.
-16. As a maintainer, I want the compatibility docs generated from the policy table, so that docs and code can't drift.
-17. As a maintainer, I want the parent→child argument decision expressed by one function, so that any future design flip (allowlist ↔ blacklist) is a table change, not a scanner rewrite.
-18. As a maintainer, I want `--rootdir` stated exactly once on the child command line, so that forwarding a user-supplied rootdir and injecting the parent's rootdir can't silently disagree.
-19. As a test author, I want to assert the child's argv by calling the module's interface with a real parsed config, so that tests don't mock internals or spawn subprocesses.
-20. As a test author, I want end-to-end pytester tests proving the child *received* an option (via a fixture reading it inside an isolated test), so that tests verify observable behavior, not argv strings produced by internals.
-21. As a downstream packager, I want unknown/`=`-joined/token forms handled consistently on every pytest version the package supports, so that no pytest upgrade reintroduces argv-mangling regressions.
-22. As a CI engineer, I want blocked-option errors to fire before collection starts, so that misconfigured isolation jobs fail fast with the actionable message.
-23. As a debugging user, I want `--no-isolation` to bypass all of this, so that I always retain a supported path for interactive debugging.
+1. As a pytest user, I want options in `--opt=value` form forwarded unchanged, so that my preferred invocation style works with isolation.
+1. As a pytest user, I want short flag clusters (e.g. `-qxl`) forwarded, so that compact invocations still isolate correctly.
+1. As a pytest user, I want options whose values start with `-` (e.g. `-k "-not_this"`) forwarded as option+value, so that negated expressions aren't dropped from the child run.
+1. As a pytest user, I want `PYTEST_ADDOPTS` options to reach the child exactly as CLI options do, so that my CI-configured defaults apply to isolated tests.
+1. As a pytest user, I want a blocked option specified via `PYTEST_ADDOPTS` rejected with the same error as on the CLI, so that there is no way to sneak an unsupported option past validation.
+1. As a pytest user, I want a clear `UsageError` naming the blocked option, its reason, and the escape hatch (`--no-isolation`), so that I can fix my invocation in one step.
+1. As a pytest user, I want plugin-internal flags (`--isolated`, `--isolated-timeout`, `--no-isolation`) consumed by the parent and never forwarded, so that the child doesn't recursively re-enable isolation.
+1. As a pytest user, I want parent-resolved selection options (`--ignore`, `--deselect`, `--lf`, …) NOT forwarded, so that the child runs exactly the nodeids the parent selected, without double-filtering.
+1. As a pytest user, I want positional test paths never forwarded, so that the child receives only the parent-resolved nodeids.
+1. As a pytest user with an exotic plugin option the maintainer never anticipated, I want my option forwarded by default (blacklist model), so that isolation works with plugins released after pytest-isolated.
+1. As a plugin author, I want a custom option I registered in my conftest (`--eval-solution-path`) forwarded in both `--opt value` and `--opt=value` forms, so that issue #48's fix never regresses for any token form.
+1. As a maintainer, I want one policy table (name → kind → reason) instead of five scattered sets, so that adding or reclassifying an option is a single-row edit.
+1. As a maintainer, I want option-value arity derived from pytest's parser, so that the class of "value dropped/misaligned" bugs is structurally impossible.
+1. As a maintainer, I want blocking validation and forwarding to consult the same table rows, so that #36-style redundant gates can never be needed again.
+1. As a maintainer, I want the compatibility docs generated from the policy table, so that docs and code can't drift.
+1. As a maintainer, I want the parent→child argument decision expressed by one function, so that any future design flip (allowlist ↔ blacklist) is a table change, not a scanner rewrite.
+1. As a maintainer, I want `--rootdir` stated exactly once on the child command line, so that forwarding a user-supplied rootdir and injecting the parent's rootdir can't silently disagree.
+1. As a test author, I want to assert the child's argv by calling the module's interface with a real parsed config, so that tests don't mock internals or spawn subprocesses.
+1. As a test author, I want end-to-end pytester tests proving the child *received* an option (via a fixture reading it inside an isolated test), so that tests verify observable behavior, not argv strings produced by internals.
+1. As a downstream packager, I want unknown/`=`-joined/token forms handled consistently on every pytest version the package supports, so that no pytest upgrade reintroduces argv-mangling regressions.
+1. As a CI engineer, I want blocked-option errors to fire before collection starts, so that misconfigured isolation jobs fail fast with the actionable message.
+1. As a debugging user, I want `--no-isolation` to bypass all of this, so that I always retain a supported path for interactive debugging.
 
 ## Implementation Decisions
 
