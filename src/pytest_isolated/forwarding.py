@@ -143,6 +143,11 @@ def _value_count(action: object) -> int:
     return 1  # unknown nargs string: be conservative and consume one
 
 
+# argparse's end-of-options marker: everything after it is positional, even
+# option-looking tokens (they are parent-side selectors, never forwarded).
+_END_OF_OPTIONS: Final = "--"
+
+
 def _looks_like_option(token: str) -> bool:
     """Mirror argparse: a token starting with '-' is not a value.
 
@@ -166,10 +171,12 @@ def child_args(config: pytest.Config) -> list[str]:
 
     The deep interface behind the parent->child seam: callers know no option
     names, token forms, or scanning rules. Positional selectors are excluded
-    (the launcher appends the parent-resolved nodeids); parent-handled and
-    blocked options are dropped together with any value tokens they consume;
-    everything else is forwarded in its original token form with arity derived
-    from the parser. The parent's resolved rootpath is appended exactly once.
+    (the launcher appends the parent-resolved nodeids); scanning stops at a
+    literal ``--`` so everything after it is treated as a selector; blocked and
+    parent-handled options are dropped together with any value tokens they
+    consume; everything else is forwarded in its original token form with
+    arity derived from the parser. The parent's resolved rootpath is appended
+    exactly once.
     """
     actions = _option_string_actions(config)
     args = config.invocation_params.args
@@ -178,13 +185,13 @@ def child_args(config: pytest.Config) -> list[str]:
 
     while i < len(args):
         token = args[i]
+        if token == _END_OF_OPTIONS:
+            break  # parent-side selectors only: the child gets resolved nodeids
 
         if _looks_like_option(token):
             name, sep, _value = token.partition("=")
-            kind = _POLICY.get(name)
-            action = actions.get(name)
-            # A joined '--opt=value' token carries its own value already.
-            count = 0 if sep or action is None else _value_count(action)
+            resolved, count = _resolve_option(name, sep, actions)
+            kind = _POLICY.get(resolved)
 
             if kind is not None:
                 # Blocked or parent-handled: drop the token and its values.
@@ -201,6 +208,35 @@ def child_args(config: pytest.Config) -> list[str]:
     if config.rootpath:
         forwarded.extend([_ROOTDIR_OPT, str(config.rootpath)])
     return forwarded
+
+
+def _resolve_option(
+    name: str, sep: str, actions: Mapping[str, object]
+) -> tuple[str, int]:
+    """Resolve an option token's name part the way argparse's matcher does.
+
+    Returns (option string the parser and policy tables know, number of
+    *following* tokens consumed). ``=``-joined tokens are direct and
+    self-contained. A single-dash cluster peels registered zero-arity flags off
+    the front (``-qk`` resolves to ``-k``, so ``-qk expr`` keeps ``-k``'s arity
+    and forwards the pair with its value); a registered value option reached
+    mid-cluster absorbs the cluster's own tail inline (``-kk`` is ``-k='k'``,
+    consuming no following token). Unknown tokens stay self-contained -- pytest
+    rejects unknown options at parse time, so that branch is defensive only.
+    """
+    if sep:
+        return name, 0  # the joined token carries its own value
+    if not name.startswith("--"):
+        while len(name) > 2 and actions.get(name) is None:
+            head = name[:2]  # argparse peels one short flag at a time
+            head_action = actions.get(head)
+            if head_action is None:
+                break  # unknown head: nothing to peel, the whole token stays
+            if _value_count(head_action) != 0:
+                return head, 0  # head absorbs the rest of the token inline
+            name = f"-{name[2:]}"
+    action = actions.get(name)
+    return name, 0 if action is None else _value_count(action)
 
 
 def _skip_values(args: Sequence[str], start: int, count: int) -> int:

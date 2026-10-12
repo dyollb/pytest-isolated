@@ -10,6 +10,7 @@ Never token-scanning internals.
 
 from __future__ import annotations
 
+import re
 import textwrap
 from pathlib import Path
 
@@ -175,6 +176,98 @@ class TestPolicyClassification:
         assert _meaningful(child_args(config)) == ["-v"]
 
 
+class TestEndOfOptionsMarker:
+    """'--' stops option scanning: everything after it is a parent-side selector.
+
+    Forwarding the marker (or tokens after it) would make the child treat the
+    appended rootdir/nodeids as positional arguments and fail collection.
+    """
+
+    def test_double_dash_and_following_tokens_never_forwarded(
+        self, pytester: Pytester
+    ) -> None:
+        _isolated_file(pytester)
+        config = pytester.parseconfig("-v", "--", "test_iso.py")
+
+        assert _meaningful(child_args(config)) == ["-v"]
+
+    def test_option_like_tokens_after_double_dash_are_selectors(
+        self, pytester: Pytester
+    ) -> None:
+        """After '--' even '-k slow' is a selector to pytest, not an option."""
+        _isolated_file(pytester)
+        config = pytester.parseconfig("--", "-k", "slow", "test_iso.py")
+
+        assert _meaningful(child_args(config)) == []
+
+    def test_double_dash_invocation_collects_and_passes_end_to_end(
+        self, pytester: Pytester
+    ) -> None:
+        """Seam A: 'pytest -- test_iso.py' still isolates and runs the child."""
+        _isolated_file(pytester)
+
+        result = pytester.runpytest("--", "test_iso.py")
+
+        result.assert_outcomes(passed=1)
+
+
+class TestShortOptionClusters:
+    """Cluster arity mirrors argparse: only a value-taking *final* option
+    consumes a following token; a value option earlier in the cluster absorbs
+    the cluster's own tail inline and stays self-contained."""
+
+    def test_cluster_with_trailing_value_option_keeps_its_value(
+        self, pytester: Pytester
+    ) -> None:
+        """argparse reads '-qk expr' as -q plus -k expr: expr must not be
+        discarded as a positional selector."""
+        _isolated_file(pytester)
+        config = pytester.parseconfig("-qk", "expr", "test_iso.py")
+
+        assert _meaningful(child_args(config)) == ["-qk", "expr"]
+
+    def test_all_flag_cluster_forwards_alone(self, pytester: Pytester) -> None:
+        _isolated_file(pytester)
+        config = pytester.parseconfig("-xv", "test_iso.py")
+
+        assert _meaningful(child_args(config)) == ["-xv"]
+
+    def test_value_option_inside_cluster_absorbs_tail_inline(
+        self, pytester: Pytester
+    ) -> None:
+        """argparse reads '-kk expr' as -k='k' (self-contained); 'expr' was a
+        selector to the parent, so the child must not receive it."""
+        _isolated_file(pytester)
+        config = pytester.parseconfig("-kk", "expr", "test_iso.py")
+
+        assert _meaningful(child_args(config)) == ["-kk"]
+
+    def test_child_receives_clustered_option_value_end_to_end(
+        self, pytester: Pytester
+    ) -> None:
+        """Seam A: the isolated test reads -k through a fixture, proving the
+        child parsed the cluster the same way the parent did."""
+        pytester.makepyfile(
+            """
+            import pytest
+
+
+            @pytest.fixture
+            def keyword(request):
+                return request.config.getoption("-k")
+
+
+            @pytest.mark.isolated
+            def test_expr_child_sees_cluster(keyword):
+                assert keyword == "expr"
+            """
+        )
+
+        result = pytester.runpytest("-qk", "expr")
+
+        result.assert_outcomes(passed=1)
+
+
 class TestRootdirStatedOnce:
     """The parent's resolved rootpath is the single rootdir source."""
 
@@ -267,35 +360,43 @@ class TestValidationReadsTheTable:
 
 
 class TestDocsMatchTable:
-    """The compatibility doc cannot drift from the policy table."""
+    """Each documented category holds exactly its policy-table options.
 
-    @staticmethod
-    def _doc() -> list[str]:
-        return (
+    Set equality in both directions: a table option missing from its category
+    section, a section entry with no table row (stale or reclassified), and an
+    option documented under the wrong category all fail here.
+    """
+
+    @classmethod
+    def _section(cls, header: str) -> str:
+        lines = (
             (Path(__file__).resolve().parents[1] / "docs" / "incompatible-options.md")
             .read_text(encoding="utf-8")
             .splitlines()
         )
-
-    def test_every_blocked_option_documented(self) -> None:
-        text = "\n".join(self._doc())
-        missing = [name for name in BLOCKED_OPTIONS if f"`{name}`" not in text]
-        assert not missing, f"blocked options missing from docs: {missing}"
-
-    def test_every_parent_handled_option_documented(self) -> None:
-        lines = self._doc()
         start = next(
-            i for i, line in enumerate(lines) if line.startswith("## Category B")
+            i for i, line in enumerate(lines) if line.startswith(f"## {header}")
         )
         end = next(
-            i
-            for i, line in enumerate(lines[start + 1 :], start + 1)
-            if line.startswith("## ")
+            (
+                i
+                for i, line in enumerate(lines[start + 1 :], start + 1)
+                if line.startswith("## ")
+            ),
+            len(lines),
         )
-        category_b = "\n".join(lines[start:end])
-        missing = [
-            name for name in PARENT_HANDLED_OPTIONS if f"`{name}`" not in category_b
-        ]
-        assert not missing, (
-            f"parent-handled options missing from Category B docs: {missing}"
-        )
+        return "\n".join(lines[start:end])
+
+    @staticmethod
+    def _documented_options(section: str) -> set[str]:
+        # Backticked option strings; '=...' value suffixes normalized away
+        # (e.g. '--capture=...' documents the '--capture' row).
+        return {found.partition("=")[0] for found in re.findall(r"`(-[^`]*)`", section)}
+
+    def test_category_a_is_exactly_the_blocked_options(self) -> None:
+        documented = self._documented_options(self._section("Category A"))
+        assert documented == set(BLOCKED_OPTIONS)
+
+    def test_category_b_is_exactly_the_parent_handled_options(self) -> None:
+        documented = self._documented_options(self._section("Category B"))
+        assert documented == set(PARENT_HANDLED_OPTIONS)
