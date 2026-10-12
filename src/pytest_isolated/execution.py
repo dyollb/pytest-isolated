@@ -11,22 +11,18 @@ import tempfile
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Final, Literal, NamedTuple, TypeAlias, cast
+from typing import Literal, NamedTuple, TypeAlias, cast
 
 import pytest
 
 from .config import (
-    _FORWARDED_OPTIONS_WITH_VALUE,
-    _INCOMPATIBLE_OPTIONS,
-    _INCOMPATIBLE_OPTIONS_WITH_VALUE,
-    _PARENT_HANDLED_FLAGS,
-    _PARENT_HANDLED_WITH_VALUE,
     CONFIG_ATTR_GROUP_TIMEOUTS,
     CONFIG_ATTR_GROUPS,
     DEFAULT_TIMEOUT,
     SUBPROC_ENV,
     SUBPROC_REPORT_PATH,
 )
+from .forwarding import child_args
 from .reporting import (
     _emit_failure_for_items,
     _emit_report,
@@ -53,69 +49,6 @@ class ExecutionContext(NamedTuple):
     """Context for test execution."""
 
     session: pytest.Session
-
-
-def _build_forwarded_args(config: pytest.Config) -> list[str]:
-    """Forward all args except those explicitly unsupported or parent-resolved."""
-
-    # Not forwarded
-    skip_options: Final = (
-        set(_INCOMPATIBLE_OPTIONS) | _PARENT_HANDLED_FLAGS | _PARENT_HANDLED_WITH_VALUE
-    )
-    # Key value options: here we expect a value
-    options_with_value: Final = (
-        _INCOMPATIBLE_OPTIONS_WITH_VALUE
-        | _PARENT_HANDLED_WITH_VALUE
-        | _FORWARDED_OPTIONS_WITH_VALUE
-    )
-
-    forwarded_args: list[str] = []
-    i = 0
-    args = config.invocation_params.args
-
-    while i < len(args):
-        arg = args[i]
-
-        # Skip positional selectors
-        if not arg.startswith("-"):
-            i += 1
-            continue
-
-        # Handle --opt=value form
-        if "=" in arg:
-            option = arg.split("=")[0]
-            if option not in skip_options:
-                forwarded_args.append(arg)
-            i += 1
-            continue
-
-        # Skip blacklisted options
-        if arg in skip_options:
-            if (
-                arg in options_with_value
-                and i + 1 < len(args)
-                and not args[i + 1].startswith("-")
-            ):
-                i += 2  # Skip option and its value
-            else:
-                i += 1
-            continue
-
-        # Forward all other options
-        forwarded_args.append(arg)
-
-        # If it takes a value, forward that too
-        if (
-            arg in options_with_value
-            and i + 1 < len(args)
-            and not args[i + 1].startswith("-")
-        ):
-            forwarded_args.append(args[i + 1])
-            i += 2
-        else:
-            i += 1
-
-    return forwarded_args
 
 
 def _run_subprocess(
@@ -194,6 +127,7 @@ def _handle_xfail_crash(
 
 
 def _handle_timeout(
+    *,
     timed_out: bool,
     group_name: str,
     group_timeout: int,
@@ -219,6 +153,7 @@ def _handle_timeout(
 
 
 def _handle_collection_crash(
+    *,
     returncode: int,
     results: TestResults,
     group_name: str,
@@ -482,8 +417,9 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         env[SUBPROC_ENV] = "1"
         env[SUBPROC_REPORT_PATH] = report_path
 
-        # Build forwarded args and subprocess command
-        forwarded_args = _build_forwarded_args(config)
+        # Build subprocess command (child args and rootdir come from the
+        # single forwarding interface; see pytest_isolated.forwarding)
+        forwarded_args = child_args(config)
 
         # Determine child's capture mode
         # Check if user wants no capture via -s or --capture=no
@@ -507,10 +443,6 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
             # Default: use tee-sys for timeout/crash output capture
             cmd.append("--capture=tee-sys")
         cmd.extend(forwarded_args)
-
-        # Pass rootdir to subprocess to ensure it uses the same project root
-        if config.rootpath:
-            cmd.extend(["--rootdir", str(config.rootpath)])
 
         # Add the test nodeids
         cmd.extend(nodeids)
@@ -548,19 +480,24 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
             continue
 
         if _handle_timeout(
-            result.timed_out,
-            group_name,
-            group_timeout,
-            execution_time,
-            group_items,
-            ctx,
-            result.stdout,
-            result.stderr,
+            timed_out=result.timed_out,
+            group_name=group_name,
+            group_timeout=group_timeout,
+            execution_time=execution_time,
+            group_items=group_items,
+            ctx=ctx,
+            stdout=result.stdout,
+            stderr=result.stderr,
         ):
             continue
 
         if _handle_collection_crash(
-            result.returncode, results, group_name, result.stderr, group_items, ctx
+            returncode=result.returncode,
+            results=results,
+            group_name=group_name,
+            proc_stderr=result.stderr,
+            group_items=group_items,
+            ctx=ctx,
         ):
             continue
 

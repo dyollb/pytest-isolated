@@ -44,8 +44,8 @@ from .config import (
     CONFIG_ATTR_GROUP_TIMEOUTS,
     CONFIG_ATTR_GROUPS,
     SUBPROC_ENV,
-    _validate_isolation_compatibility,
 )
+from .forwarding import validate_isolation_compatibility
 
 
 def _has_isolated_marker(obj: Any) -> bool:
@@ -72,22 +72,6 @@ def pytest_collection_modifyitems(
         setattr(config, CONFIG_ATTR_GROUPS, OrderedDict())
         return
 
-    # If --pdb is set, refuse to run isolated tests (pdb cannot work in subprocesses)
-    if config.getoption("usepdb", False):
-        has_isolated_tests = config.getoption("isolated", False) or any(
-            item.get_closest_marker("isolated") for item in items
-        )
-        if has_isolated_tests:
-            msg = (
-                "--pdb cannot be used with isolated tests (subprocesses "
-                "don't support interactive debugging).\n"
-                "  Use '--no-isolation --pdb' to debug without isolation."
-            )
-            raise pytest.UsageError(msg)
-        # No isolated tests found, nothing to do
-        setattr(config, CONFIG_ATTR_GROUPS, OrderedDict())
-        return
-
     # If --isolated is set, run all tests in isolation
     run_all_isolated = config.getoption("isolated", False)
 
@@ -96,9 +80,12 @@ def pytest_collection_modifyitems(
         item.get_closest_marker("isolated") for item in items
     )
 
-    # Validate incompatible options early if isolation will be used
+    # Validate incompatible options early if isolation will be used. This is
+    # the single enforcement point: blocked options are detected via parsed
+    # state, covering CLI, PYTEST_ADDOPTS, and addopts ini alike (the old
+    # separate --pdb gate is now just a row in the policy table).
     if has_isolated_tests:
-        _validate_isolation_compatibility(config)
+        validate_isolation_compatibility(config)
 
     groups: OrderedDict[str, list[pytest.Item]] = OrderedDict()
     group_timeouts: dict[str, int | None] = {}  # Track timeout per group
