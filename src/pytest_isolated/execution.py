@@ -351,6 +351,14 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
     if os.environ.get(SUBPROC_ENV) == "1":
         return None  # child runs the normal loop
 
+    if session.config.option.collectonly:
+        # Stock pytest's collect-only short-circuit, required because this
+        # hook replaces the built-in loop (#53). Returning True claims the
+        # firstresult hook and skips all execution; without it, collection
+        # would launch children (--collect-only is Category B, never
+        # forwarded, so the child would run the tests for real).
+        return True
+
     config = session.config
     groups = getattr(config, CONFIG_ATTR_GROUPS, OrderedDict())
     group_timeouts: dict[str, int | None] = getattr(
