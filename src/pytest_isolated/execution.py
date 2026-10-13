@@ -325,7 +325,7 @@ def _emit_all_results(
             _emit_report(
                 it,
                 when=when,
-                outcome=rec.get("outcome", "failed"),  # type: ignore[arg-type]
+                outcome=rec.get("outcome", "failed"),
                 longrepr=rec.get("longrepr", ""),
                 duration=rec.get("duration", 0.0),
                 stdout=rec.get("stdout", ""),

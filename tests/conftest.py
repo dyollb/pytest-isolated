@@ -19,7 +19,7 @@ def pytest_collection_modifyitems(
 ) -> None:
     """Skip tests that require pytest-timeout if it's not installed."""
     try:
-        import pytest_timeout  # noqa
+        import pytest_timeout  # type: ignore[import-untyped]  # noqa: F401, PLC0415
 
         timeout_available = True
     except ImportError:
