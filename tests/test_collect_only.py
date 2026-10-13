@@ -1,4 +1,6 @@
-"""Regression tests for #53: --collect-only must not execute tests.
+"""Regression tests for
+https://github.com/dyollb/pytest-isolated/issues/53: --collect-only must not
+execute tests.
 
 pytest-isolated replaces pytest's runtestloop; the custom loop must keep
 stock pytest's collect-only short-circuit, or collection runs tests.
@@ -47,9 +49,11 @@ def _ran_markers(pytester: Pytester) -> list[str]:
 
 @pytest.mark.parametrize("flag", ["--collect-only", "--co"])
 def test_collect_only_lists_but_runs_nothing(pytester: Pytester, flag: str) -> None:
-    """The #53 reproducer: with an isolated test present, collection ran both
-    tests (the child executed because --collect-only is never forwarded, and
-    the plain one ran in the loop's in-process tail)."""
+    """The reproducer from
+    https://github.com/dyollb/pytest-isolated/issues/53: with an isolated test
+    present, collection ran both tests (the child executed because
+    --collect-only is never forwarded, and the plain one ran in the loop's
+    in-process tail)."""
     _mixed_file(pytester)
 
     result = pytester.runpytest(flag)
