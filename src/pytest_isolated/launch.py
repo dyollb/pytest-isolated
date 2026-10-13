@@ -1,15 +1,17 @@
 """The child launch seam: everything an isolated child subprocess is told.
 
-``plan_launch`` is the single place the child's interface is assembled —
+``plan_launch`` is the single place the child's interface is assembled --
 command line, environment, working directory, and the file handle it writes
 results to. The run loop plans, runs, and consumes; it never touches option
 forwarding, capture policy, env construction, temp-file creation, or cwd
-derivation (spec: docs/spec-child-launch-deepening.md).
+derivation.
 
 Ownership boundary: ``forwarding.child_args`` remains the sole owner of option
 policy (what is forwarded/blocked/parent-handled); this module owns argv
 packaging around it, plus env, cwd, and the report channel. The child timeout
 is a parent-side run parameter, deliberately not part of ``LaunchSpec``.
+
+Spec: issue #65.
 """
 
 from __future__ import annotations

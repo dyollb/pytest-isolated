@@ -1,6 +1,6 @@
 """Unit tests for the plan_launch interface.
 
-Spec: docs/spec-child-launch-deepening.md
+Spec: issue #65.
 
 Seam: plan_launch(real_config, nodeid_strings) -> LaunchSpec, asserted
 field-by-field (cmd, env, cwd, report_path). No mocks, no spawned children —
@@ -24,7 +24,8 @@ from pytest_isolated.launch import LaunchSpec, plan_launch
 # parseconfig always injects these; not interesting for the assertions below.
 _NOISE_PREFIXES = ("--basetemp",)
 
-# The launcher's fixed base command, asserted as a literal (spec order).
+# The launcher's fixed base command, asserted as a literal; cmd order is
+# base flags, capture policy, forwarded args, nodeids.
 _BASE_CMD = [sys.executable, "-u", "-m", "pytest"]
 
 
