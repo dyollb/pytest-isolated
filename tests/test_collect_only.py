@@ -82,8 +82,8 @@ def test_one():
 
 
 def test_collect_only_with_no_isolation_runs_nothing(pytester: Pytester) -> None:
-    """Bypass mode already delegated to the stock loop's guard; pinned so a
-    future loop change cannot silently break it."""
+    """Bypass mode must retain collect-only behavior; pinned so a future
+    loop change cannot silently break it."""
     _mixed_file(pytester)
 
     result = pytester.runpytest("--collect-only", "--no-isolation")
