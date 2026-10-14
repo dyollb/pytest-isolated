@@ -149,13 +149,16 @@ def _emit_outcome(
 
     if isinstance(outcome, CollectionCrash):
         stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
-        msg = (
-            f"Subprocess group={group_name!r} exited with code "
-            f"{outcome.returncode} and produced no per-test report. The "
-            f"subprocess may have crashed during collection."
+        msg = format_crash_message(
+            outcome.returncode,
+            "during collection",
+            stderr_text,
+            message_prefix=(
+                f"Subprocess group={group_name!r} exited with code "
+                f"{outcome.returncode} and produced no per-test report. The "
+                f"subprocess may have crashed during collection."
+            ),
         )
-        if stderr_text:
-            msg += f"\n\nSubprocess stderr:\n{stderr_text}"
         emit_failure_for_items(group_items, msg, ctx.session)
         return
 

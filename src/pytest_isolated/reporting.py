@@ -67,6 +67,8 @@ def format_crash_message(
     returncode: int,
     context: str,
     stderr_text: str = "",
+    *,
+    message_prefix: str | None = None,
 ) -> str:
     """Build a complete crash error message with optional stderr output.
 
@@ -74,12 +76,17 @@ def format_crash_message(
         returncode: The subprocess return code.
         context: Description of when the crash occurred (e.g., "during test execution").
         stderr_text: Optional captured stderr from the subprocess.
+        message_prefix: Optional contextual message to use before captured stderr.
 
     Returns:
         A formatted error message suitable for test failure reports.
     """
     reason = _format_crash_reason(returncode)
-    msg = f"Subprocess {reason} {context}."
+    msg = (
+        message_prefix
+        if message_prefix is not None
+        else f"Subprocess {reason} {context}."
+    )
     if stderr_text:
         msg += f"\n\nSubprocess stderr:\n{stderr_text}"
     return msg
