@@ -4,12 +4,16 @@ Arg-forwarding tests live in tests/test_child_args.py (the child_args interface)
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
 
-from pytest_isolated.execution import _detect_crashed_tests, _parse_results
+from pytest_isolated.execution import (
+    TestResults,
+    _detect_crashed_tests,
+    _parse_results,
+)
 
 
 class TestParseResults:
@@ -165,7 +169,7 @@ class TestParseResults:
 class TestDetectCrashedTests:
     """Test _detect_crashed_tests function."""
 
-    def _make_item(self, nodeid: str, xfail: bool = False) -> Mock:
+    def _make_item(self, nodeid: str, xfail: bool = False) -> pytest.Item:
         """Create a mock pytest.Item."""
         item = Mock()
         item.nodeid = nodeid
@@ -173,12 +177,12 @@ class TestDetectCrashedTests:
             item.get_closest_marker.return_value = Mock()  # xfail marker
         else:
             item.get_closest_marker.return_value = None
-        return item
+        return cast(pytest.Item, item)
 
     def test_detects_crash_when_setup_passed_no_call(self) -> None:
         """Test detecting crash when setup passed but call phase missing."""
         items = [self._make_item("test.py::test_crash")]
-        results = {
+        results: TestResults = {
             "test.py::test_crash": {
                 "setup": {"outcome": "passed"},
                 # Missing "call" phase indicates crash
@@ -198,12 +202,12 @@ class TestDetectCrashedTests:
     def test_no_crash_when_setup_not_passed(self, setup_outcome: str) -> None:
         """Test that non-passed setup + missing call is not a crash."""
         items = [self._make_item("test.py::test_no_crash")]
-        results = {
-            "test.py::test_no_crash": {
-                "setup": {"outcome": setup_outcome},
-                # Missing "call" is expected when setup doesn't pass
-            }
-        }
+        # "error" is deliberately outside the recorded outcome vocabulary; the
+        # cast keeps the defensive case testable against the typed schema.
+        results = cast(
+            "TestResults",
+            {"test.py::test_no_crash": {"setup": {"outcome": setup_outcome}}},
+        )
 
         crashed, not_run = _detect_crashed_tests(items, results)
 
@@ -217,7 +221,7 @@ class TestDetectCrashedTests:
             self._make_item("test.py::test_crash"),
             self._make_item("test.py::test_never_run"),
         ]
-        results = {
+        results: TestResults = {
             "test.py::test_one": {
                 "setup": {"outcome": "passed"},
                 "call": {"outcome": "passed"},
@@ -240,7 +244,7 @@ class TestDetectCrashedTests:
     def test_no_crash_when_all_phases_present(self) -> None:
         """Test that complete test results are not flagged as crashed."""
         items = [self._make_item("test.py::test_complete")]
-        results = {
+        results: TestResults = {
             "test.py::test_complete": {
                 "setup": {"outcome": "passed"},
                 "call": {"outcome": "failed"},
@@ -259,7 +263,7 @@ class TestDetectCrashedTests:
             self._make_item("test.py::test_crash_one"),
             self._make_item("test.py::test_crash_two"),
         ]
-        results = {
+        results: TestResults = {
             "test.py::test_crash_one": {"setup": {"outcome": "passed"}},
             "test.py::test_crash_two": {"setup": {"outcome": "passed"}},
         }
@@ -275,7 +279,7 @@ class TestDetectCrashedTests:
             self._make_item("test.py::test_one"),
             self._make_item("test.py::test_two"),
         ]
-        results: dict[str, Any] = {}
+        results: TestResults = {}
 
         crashed, not_run = _detect_crashed_tests(items, results)
 
@@ -289,7 +293,7 @@ class TestDetectCrashedTests:
             self._make_item("test.py::test_one"),
             self._make_item("test.py::test_two"),
         ]
-        results = {
+        results: TestResults = {
             "test.py::test_one": {
                 "setup": {"outcome": "passed"},
                 "call": {"outcome": "passed"},

@@ -141,7 +141,7 @@ def _emit_report(
     if outcome == "skipped" and longrepr:
         # Parse longrepr or create simple tuple
         lineno = item.location[1] if item.location[1] is not None else -1
-        rep.longrepr = (str(item.fspath), lineno, longrepr)  # type: ignore[assignment]
+        rep.longrepr = (str(item.fspath), lineno, longrepr)
     elif outcome == "failed" and longrepr:
         rep.longrepr = longrepr
 

@@ -7,7 +7,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -20,9 +19,8 @@ from .config import (
     CONFIG_ATTR_GROUPS,
     DEFAULT_TIMEOUT,
     SUBPROC_ENV,
-    SUBPROC_REPORT_PATH,
 )
-from .forwarding import child_args
+from .launch import LaunchSpec, plan_launch
 from .reporting import (
     _emit_failure_for_items,
     _emit_report,
@@ -52,20 +50,19 @@ class ExecutionContext(NamedTuple):
 
 
 def _run_subprocess(
-    cmd: list[str],
-    env: dict[str, str],
+    spec: LaunchSpec,
+    *,
     timeout: int,
-    cwd: str | None,
 ) -> SubprocessResult:
-    """Run subprocess and return result."""
+    """Run the planned child subprocess and return its result."""
     try:
         proc = subprocess.run(
-            cmd,
-            env=env,
+            spec.cmd,
+            env=spec.env,
             timeout=timeout,
             capture_output=True,
             check=False,
-            cwd=cwd,
+            cwd=spec.cwd,
         )
         return SubprocessResult(
             returncode=proc.returncode,
@@ -328,7 +325,7 @@ def _emit_all_results(
             _emit_report(
                 it,
                 when=when,
-                outcome=rec.get("outcome", "failed"),  # type: ignore[arg-type]
+                outcome=rec.get("outcome", "failed"),
                 longrepr=rec.get("longrepr", ""),
                 duration=rec.get("duration", 0.0),
                 stdout=rec.get("stdout", ""),
@@ -416,57 +413,13 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         # Get timeout for this group (marker timeout > global timeout)
         group_timeout = group_timeouts.get(group_name) or default_timeout
 
-        # file where the child will append JSONL records
-        with tempfile.NamedTemporaryFile(
-            prefix="pytest-subproc-", suffix=".jsonl", delete=False
-        ) as tf:
-            report_path = tf.name
-
-        env = os.environ.copy()
-        env[SUBPROC_ENV] = "1"
-        env[SUBPROC_REPORT_PATH] = report_path
-
-        # Build subprocess command (child args and rootdir come from the
-        # single forwarding interface; see pytest_isolated.forwarding)
-        forwarded_args = child_args(config)
-
-        # Determine child's capture mode
-        # Check if user wants no capture via -s or --capture=no
-        # Note: Both -s and --capture=no result in capture mode "no"
-        capture_mode = config.getoption("capture", "fd")
-
-        # Build subprocess command
-        # Use -u to force unbuffered output (so partial output is available
-        # on timeout/crash)
-        # Default to --capture=tee-sys which duplicates output to both pytest's
-        # capture AND stdout/stderr. This allows the parent to capture partial
-        # output on timeout/crash via subprocess.run(). For normal test
-        # completion, output comes through JSONL reports.
-        # The parent's --capture setting (not forwarded) controls what the user sees.
-        # Exception: if user wants no capture (-s or --capture=no), respect that.
-        cmd = [sys.executable, "-u", "-m", "pytest"]
-        if capture_mode == "no":
-            # User wants no capture via -s or --capture=no
-            cmd.append("-s")
-        else:
-            # Default: use tee-sys for timeout/crash output capture
-            cmd.append("--capture=tee-sys")
-        cmd.extend(forwarded_args)
-
-        # Add the test nodeids
-        cmd.extend(nodeids)
-
-        # Determine the working directory for the subprocess
-        # Use rootpath if set, otherwise use invocation directory
-        # This ensures nodeids (which are relative to rootpath) can be resolved
-        if config.rootpath:
-            subprocess_cwd = str(config.rootpath)
-        else:
-            subprocess_cwd = str(config.invocation_params.dir)
+        # Everything the child is told (argv, env, cwd, report file) is
+        # planned by one deep interface; see pytest_isolated.launch.
+        spec = plan_launch(config, nodeids)
 
         # Run subprocess
         start_time = time.time()
-        result = _run_subprocess(cmd, env, group_timeout, subprocess_cwd)
+        result = _run_subprocess(spec, timeout=group_timeout)
         execution_time = time.time() - start_time
 
         # --setup-show prints fixture lifecycle to terminal output in child.
@@ -482,7 +435,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
                 sys.stdout.write("\n".join(setup_lines) + "\n")
 
         # Parse results
-        results = _parse_results(report_path)
+        results = _parse_results(spec.report_path)
 
         # Handle various failure conditions
         if _handle_xfail_crash(result.returncode, results, group_items, ctx):
