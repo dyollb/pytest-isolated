@@ -33,6 +33,12 @@ The maximum run time one Group's Child gets (marker > CLI/ini default). A
 Parent-side run parameter on the Group, deliberately not part of what the Child
 is told.
 
+**Outcome**:
+The Parent's verdict on one Group's Child run: Clean, Timed Out, Collection
+Crash, Xfail Crash, or Partial Crash; produced by classification, consumed by
+emission.
+_Avoid_: result, failure mode, status
+
 ### The child's interface
 
 **Launch plan**:

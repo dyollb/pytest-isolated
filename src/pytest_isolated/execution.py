@@ -21,12 +21,22 @@ from .config import (
     SUBPROC_ENV,
 )
 from .launch import LaunchSpec, plan_launch
+from .outcome import (
+    Clean,
+    CollectionCrash,
+    Member,
+    Outcome,
+    PartialCrash,
+    TimedOut,
+    XfailCrash,
+    classify,
+)
 from .reporting import (
-    _emit_failure_for_items,
-    _emit_report,
-    _format_crash_message,
-    _get_xfail_reason,
     _TestRecord,
+    emit_failure_for_items,
+    emit_report,
+    format_crash_message,
+    get_xfail_reason,
 )
 
 # Type aliases for clarity
@@ -102,185 +112,110 @@ def _parse_results(report_path: str) -> TestResults:
     return results
 
 
-def _handle_xfail_crash(
-    returncode: int,
-    results: TestResults,
-    group_items: list[pytest.Item],
-    ctx: ExecutionContext,
-) -> bool:
-    """Check if crash should be treated as xfail. Returns True if handled."""
-    if returncode < 0 and results:
-        # Check if all tests in this group are marked xfail
-        all_xfail = all(it.get_closest_marker("xfail") for it in group_items)
-        if all_xfail:
-            # Override any results from subprocess - crash is the expected outcome
-            msg = (
-                f"Subprocess crashed with signal {-returncode} "
-                f"(expected for xfail test)"
-            )
-            _emit_failure_for_items(group_items, msg, ctx.session)
-            return True
-    return False
-
-
-def _handle_timeout(
+def _emit_outcome(
     *,
-    timed_out: bool,
+    outcome: Outcome,
+    result: SubprocessResult,
+    results: TestResults,
+    members: list[Member],
     group_name: str,
     group_timeout: int,
     execution_time: float,
     group_items: list[pytest.Item],
     ctx: ExecutionContext,
-    stdout: bytes = b"",
-    stderr: bytes = b"",
-) -> bool:
-    """Handle subprocess timeout. Returns True if handled."""
-    if timed_out:
+) -> None:
+    """Emit synthetic reports for classified failures and ordinary child records."""
+    items_by_nodeid = {item.nodeid: item for item in group_items}
+
+    if isinstance(outcome, XfailCrash):
+        msg = (
+            f"Subprocess crashed with signal {-outcome.returncode} "
+            f"(expected for xfail test)"
+        )
+        emit_failure_for_items(group_items, msg, ctx.session)
+        return
+
+    if isinstance(outcome, TimedOut):
         msg = (
             f"Subprocess group={group_name!r} timed out after {group_timeout} "
             f"seconds (execution time: {execution_time:.2f}s). "
             f"Increase timeout with --isolated-timeout, isolated_timeout ini, "
             f"or @pytest.mark.isolated(timeout=N)."
         )
-        stdout_text = stdout.decode("utf-8", errors="replace")
-        stderr_text = stderr.decode("utf-8", errors="replace")
-        _emit_failure_for_items(group_items, msg, ctx.session, stdout_text, stderr_text)
-        return True
-    return False
+        stdout_text = result.stdout.decode("utf-8", errors="replace")
+        stderr_text = result.stderr.decode("utf-8", errors="replace")
+        emit_failure_for_items(group_items, msg, ctx.session, stdout_text, stderr_text)
+        return
 
-
-def _handle_collection_crash(
-    *,
-    returncode: int,
-    results: TestResults,
-    group_name: str,
-    proc_stderr: bytes,
-    group_items: list[pytest.Item],
-    ctx: ExecutionContext,
-) -> bool:
-    """Handle crash during collection (no results produced). Returns True if handled."""
-    if not results:
-        stderr_text = proc_stderr.decode("utf-8", errors="replace").strip()
+    if isinstance(outcome, CollectionCrash):
+        stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
         msg = (
-            f"Subprocess group={group_name!r} exited with code {returncode} "
-            f"and produced no per-test report. The subprocess may have "
-            f"crashed during collection."
+            f"Subprocess group={group_name!r} exited with code "
+            f"{outcome.returncode} and produced no per-test report. The "
+            f"subprocess may have crashed during collection."
         )
         if stderr_text:
             msg += f"\n\nSubprocess stderr:\n{stderr_text}"
-        _emit_failure_for_items(group_items, msg, ctx.session)
-        return True
-    return False
+        emit_failure_for_items(group_items, msg, ctx.session)
+        return
 
-
-def _detect_crashed_tests(
-    group_items: list[pytest.Item],
-    results: TestResults,
-) -> tuple[list[pytest.Item], list[pytest.Item]]:
-    """Detect crashed and not-run tests. Returns (crashed_items, not_run_items)."""
-    crashed_items: list[pytest.Item] = []
-
-    for it in group_items:
-        node_results = results.get(it.nodeid, {})
-        # Test started (setup passed) but crashed before call completed.
-        # If setup was skipped or failed, no call phase is expected.
-        if node_results and "call" not in node_results:
-            setup_result = node_results.get("setup", {})
-            setup_outcome = setup_result.get("outcome", "")
-            if setup_outcome == "passed":
-                crashed_items.append(it)
-
-    # If we detected crashed tests, also find tests that never ran
-    # (they come after the crashing test in the same group)
-    not_run_items: list[pytest.Item] = []
-    if crashed_items:
-        for it in group_items:
-            node_results = results.get(it.nodeid, {})
-            # Test never started (no results at all)
-            if not node_results:
-                not_run_items.append(it)
-
-    return crashed_items, not_run_items
-
-
-def _handle_mid_test_crash(
-    returncode: int,
-    proc_stderr: bytes,
-    group_items: list[pytest.Item],
-    results: TestResults,
-    ctx: ExecutionContext,
-) -> bool:
-    """Handle crash during test execution. Returns True if handled."""
-    crashed_items, not_run_items = _detect_crashed_tests(group_items, results)
-
-    if not (crashed_items or not_run_items):
-        return False
-
-    stderr_text = proc_stderr.decode("utf-8", errors="replace").strip()
-
-    # Emit failures for crashed tests
-    if crashed_items:
-        crash_msg = _format_crash_message(
-            returncode, "during test execution", stderr_text
+    remaining_results = results
+    if isinstance(outcome, PartialCrash):
+        stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
+        crash_msg = format_crash_message(
+            outcome.returncode, "during test execution", stderr_text
         )
+        xfail_reasons = {member.nodeid: member.xfail_reason for member in members}
 
-        for it in crashed_items:
-            node_results = results.get(it.nodeid, {})
-            # Emit setup phase if it was recorded
+        for nodeid in outcome.crashed:
+            item = items_by_nodeid[nodeid]
+            node_results = results.get(nodeid, {})
             if "setup" in node_results:
-                rec = node_results["setup"]
-                _emit_report(
-                    it,
+                record = node_results["setup"]
+                emit_report(
+                    item,
                     when="setup",
-                    outcome=rec["outcome"],
-                    longrepr=rec.get("longrepr", ""),
-                    duration=rec.get("duration", 0.0),
+                    outcome=record["outcome"],
+                    longrepr=record.get("longrepr", ""),
+                    duration=record.get("duration", 0.0),
                 )
             else:
-                _emit_report(
-                    it,
-                    when="setup",
-                    outcome="passed",
-                )
+                emit_report(item, when="setup", outcome="passed")
 
-            # Emit call phase as failed with crash info
-            xfail_reason = _get_xfail_reason(it)
+            xfail_reason = xfail_reasons[nodeid]
             if xfail_reason:
-                _emit_report(
-                    it,
+                emit_report(
+                    item,
                     when="call",
                     outcome="skipped",
                     longrepr=crash_msg,
                     wasxfail=xfail_reason,
                 )
             else:
-                _emit_report(
-                    it,
-                    when="call",
-                    outcome="failed",
-                    longrepr=crash_msg,
-                )
+                emit_report(item, when="call", outcome="failed", longrepr=crash_msg)
                 ctx.session.testsfailed += 1
 
-            _emit_report(
-                it,
-                when="teardown",
-                outcome="passed",
+            emit_report(item, when="teardown", outcome="passed")
+
+        if outcome.not_run:
+            not_run_msg = format_crash_message(
+                outcome.returncode, "during earlier test execution", stderr_text
             )
-            # Remove from results so they're not processed again
-            results.pop(it.nodeid, None)
+            not_run_msg = f"Test did not run - {not_run_msg}"
+            not_run_items = [items_by_nodeid[nodeid] for nodeid in outcome.not_run]
+            emit_failure_for_items(not_run_items, not_run_msg, ctx.session)
 
-    # Emit failures for tests that never ran due to earlier crash
-    if not_run_items:
-        not_run_msg = _format_crash_message(
-            returncode, "during earlier test execution", stderr_text
-        )
-        not_run_msg = f"Test did not run - {not_run_msg}"
-        _emit_failure_for_items(not_run_items, not_run_msg, ctx.session)
-        for it in not_run_items:
-            results.pop(it.nodeid, None)
+        handled_nodeids = set(outcome.crashed) | set(outcome.not_run)
+        remaining_results = {
+            nodeid: node_results
+            for nodeid, node_results in results.items()
+            if nodeid not in handled_nodeids
+        }
 
-    return True
+    elif not isinstance(outcome, Clean):
+        raise AssertionError(f"Unhandled outcome: {outcome!r}")
+
+    _emit_all_results(group_items, remaining_results, ctx)
 
 
 def _emit_all_results(
@@ -298,31 +233,13 @@ def _emit_all_results(
         if it.nodeid not in results:
             continue
 
-        # Check if setup passed (to determine if missing call is expected)
-        setup_passed = (
-            "setup" in node_results and node_results["setup"]["outcome"] == "passed"
-        )
-
         # Emit setup, call, teardown in order
         for when in phases:
             if when not in node_results:
-                # If missing call phase AND setup passed, emit a failure
-                # (crash detection should handle most cases, but this
-                # is a safety net for unexpected situations)
-                # If setup failed, missing call is expected (pytest skips call)
-                if when == "call" and setup_passed:
-                    msg = f"Missing 'call' phase result from subprocess for {it.nodeid}"
-                    _emit_report(
-                        it,
-                        when="call",
-                        outcome="failed",
-                        longrepr=msg,
-                    )
-                    ctx.session.testsfailed += 1
                 continue
 
             rec = node_results[when]
-            _emit_report(
+            emit_report(
                 it,
                 when=when,
                 outcome=rec.get("outcome", "failed"),
@@ -437,42 +354,22 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         # Parse results
         results = _parse_results(spec.report_path)
 
-        # Handle various failure conditions
-        if _handle_xfail_crash(result.returncode, results, group_items, ctx):
-            continue
-
-        if _handle_timeout(
-            timed_out=result.timed_out,
+        members = [Member(it.nodeid, get_xfail_reason(it)) for it in group_items]
+        outcome = classify(result, results, members)
+        _emit_outcome(
+            outcome=outcome,
+            result=result,
+            results=results,
+            members=members,
             group_name=group_name,
             group_timeout=group_timeout,
             execution_time=execution_time,
             group_items=group_items,
             ctx=ctx,
-            stdout=result.stdout,
-            stderr=result.stderr,
-        ):
-            continue
-
-        if _handle_collection_crash(
-            returncode=result.returncode,
-            results=results,
-            group_name=group_name,
-            proc_stderr=result.stderr,
-            group_items=group_items,
-            ctx=ctx,
-        ):
-            continue
-
-        if _handle_mid_test_crash(
-            result.returncode, result.stderr, group_items, results, ctx
-        ):
-            pass  # Continue to emit remaining results
-
-        # Emit normal test results
-        _emit_all_results(group_items, results, ctx)
+        )
 
         # Check if we should exit early due to maxfail/exitfirst
-        if (
+        if isinstance(outcome, (Clean, PartialCrash)) and (
             session.testsfailed
             and session.config.option.maxfail
             and session.testsfailed >= session.config.option.maxfail
