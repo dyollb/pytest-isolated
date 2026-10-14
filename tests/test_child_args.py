@@ -1,6 +1,6 @@
 """Unit/e2e tests for the child_args interface.
 
-Spec: issue #64
+Spec: https://github.com/dyollb/pytest-isolated/issues/64
 
 Seam A (primary, e2e): what the child *received*, observed through a fixture
 inside an isolated test.

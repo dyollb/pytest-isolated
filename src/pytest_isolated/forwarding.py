@@ -4,7 +4,7 @@ This module owns the single decision "which arguments does an isolated child
 subprocess receive?" and the single enforcement point for options that are
 incompatible with isolation.
 
-Design (spec: issue #64, ADR-0001):
+Design (spec: https://github.com/dyollb/pytest-isolated/issues/64, ADR-0001):
 
 - Option value-arity is derived from the parent's parsed pytest parser, never
   from a hand-maintained list. Third-party and conftest-registered options are

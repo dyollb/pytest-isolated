@@ -14,16 +14,16 @@ while children do the executing.
 _Avoid_: main process, host process
 
 **Child**:
-A fresh pytest process that runs one isolated Group and reports its results
+A fresh pytest process that runs one Isolated Group and reports its results
 back to the Parent.
 _Avoid_: subprocess (a mechanism word, not the domain noun), spawned process
 
 **Isolation**:
-Running an isolated Group in a fresh Child instead of in the Parent's process.
+Running an Isolated Group in a fresh Child instead of in the Parent's process.
 Active when a run has isolated-marked tests or `--isolated`.
 _Avoid_: sandboxing, forking (Children are spawned, not forked)
 
-**Group** (isolated group):
+**Isolated Group**:
 The set of tests that share one Child. An explicit group name wins; otherwise
 the closest marker scope decides — a function's own marker isolates it alone, a
 class marker groups its methods, a module marker groups the module.
