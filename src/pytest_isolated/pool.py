@@ -43,6 +43,10 @@ _POLL_INTERVAL_SECONDS: Final = 0.05
 # to "partial output we have" instead of hanging the Parent.
 _DRAIN_JOIN_TIMEOUT_SECONDS: Final = 10.0
 
+# Bytes requested per incremental pipe read; any nonzero amount received is
+# published immediately, so the size only bounds a single read call.
+_READ_CHUNK_BYTES: Final = 65536
+
 
 class SubprocessResult(NamedTuple):
     """Result from running a subprocess."""
@@ -99,7 +103,17 @@ class _PipeBuffer:
         self._chunks: list[bytes] = []
 
     def consume(self, stream: BinaryIO) -> None:
-        self._chunks.append(stream.read())
+        # Read incrementally (read1 yields whatever a single raw read
+        # returns, never blocking for a full buffer) so a partial snapshot
+        # holds the bytes already received even if EOF never arrives -- e.g.
+        # a grandchild inherited the pipe and keeps it open after the Child
+        # exits, leaving finish()'s capped thread joins short of EOF.
+        read1 = getattr(stream, "read1", None) or stream.read
+        while True:
+            chunk = read1(_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            self._chunks.append(chunk)
 
     def value(self) -> bytes:
         return b"".join(chunk for chunk in self._chunks if chunk)

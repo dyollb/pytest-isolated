@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -22,7 +23,7 @@ import pytest
 
 from pytest_isolated.config import resolve_numprocesses
 from pytest_isolated.launch import LaunchSpec
-from pytest_isolated.pool import RunningChild, decide_admissions
+from pytest_isolated.pool import RunningChild, _PipeBuffer, decide_admissions
 
 
 class TestDecideAdmissions:
@@ -247,3 +248,34 @@ class TestRunningChildLifecycle:
         child.kill()
         result = child.finish()
         assert b"early output" in result.stdout.replace(b"\r\n", b"\n")
+
+
+class TestPipeBufferIncremental:
+    def test_publishes_bytes_before_eof(self) -> None:
+        """consume() must make received bytes visible without waiting for EOF.
+
+        A grandchild keeping the write end open would otherwise starve the
+        read; the reader thread publishes each read1() chunk as it arrives.
+        """
+        read_fd, write_fd = os.pipe()
+        stream = os.fdopen(read_fd, "rb", buffering=-1)  # BufferedReader
+        buffer = _PipeBuffer()
+        thread = threading.Thread(target=buffer.consume, args=(stream,), daemon=True)
+        thread.start()
+        try:
+            os.write(write_fd, b"first chunk")
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not buffer.value():
+                time.sleep(0.01)
+            # Visible while the writer is still open (no EOF yet).
+            assert buffer.value() == b"first chunk"
+            os.write(write_fd, b" + second")
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and buffer.value() == b"first chunk":
+                time.sleep(0.01)
+            assert buffer.value() == b"first chunk + second"
+        finally:
+            os.close(write_fd)  # EOF lets the reader thread exit
+            thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert buffer.value() == b"first chunk + second"
