@@ -169,6 +169,16 @@ class TestResolveNumprocesses:
             monkeypatch.setattr(os, "cpu_count", lambda: 7)
         assert resolve_numprocesses("auto") == 7
 
+    def test_auto_survives_process_cpu_count_returning_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Windows-shaped branch: no affinity source, process_cpu_count()
+        # answers None (undeterminable) -> must fall through to cpu_count.
+        monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+        monkeypatch.setattr(os, "process_cpu_count", lambda: None, raising=False)
+        monkeypatch.setattr(os, "cpu_count", lambda: 5)
+        assert resolve_numprocesses("auto") == 5
+
     def test_auto_case_insensitive(self) -> None:
         assert resolve_numprocesses("AUTO") == resolve_numprocesses("auto")
 

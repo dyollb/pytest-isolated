@@ -105,7 +105,8 @@ def _auto_process_count() -> int:
                 count = process_cpu_count()
             except NotImplementedError:  # pragma: no cover - defensive
                 count = 0
-            if count > 0:
+            # process_cpu_count() may return None when undeterminable.
+            if count is not None and count > 0:
                 return count
     return os.cpu_count() or 1
 
