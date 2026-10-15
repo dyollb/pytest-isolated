@@ -23,7 +23,12 @@ import pytest
 
 from pytest_isolated.config import resolve_numprocesses
 from pytest_isolated.launch import LaunchSpec
-from pytest_isolated.pool import RunningChild, _PipeBuffer, decide_admissions
+from pytest_isolated.pool import (
+    _KILL_GRACE_SECONDS,
+    RunningChild,
+    _PipeBuffer,
+    decide_admissions,
+)
 
 
 class TestDecideAdmissions:
@@ -226,6 +231,53 @@ class TestRunningChildLifecycle:
         assert child.proc.poll() is not None  # exited, no orphan
         result = child.finish()
         assert result.timed_out is False  # kill itself does not set the flag
+
+    def test_request_kill_returns_immediately_and_terminates(self) -> None:
+        child = RunningChild("g", _spec_for("import time; time.sleep(60)"), timeout=30)
+        try:
+            start = time.monotonic()
+            child.request_kill()
+            # Must not block for the grace period (unlike kill(), which
+            # costs >= 5s on a sleeper that never exits); 3s leaves room
+            # for a loaded CI runner without weakening the claim.
+            assert time.monotonic() - start < 3.0
+            deadline = time.monotonic() + 5
+            while child.is_alive() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert child.proc.poll() is not None
+        finally:
+            child.kill()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="needs an ignorable SIGTERM")
+    def test_escalate_kill_finishes_a_stubborn_child(self) -> None:
+        code = (
+            "import signal, sys, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "print('armed', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        child = RunningChild("g", _spec_for(code), timeout=30)
+        try:
+            # Only fight after the handler is installed: a still-starting
+            # interpreter takes SIGTERM like any process.
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not child._stdout.value():
+                time.sleep(0.01)
+            assert child._stdout.value(), "child never armed"
+            child.request_kill()
+            time.sleep(0.3)
+            assert child.is_alive()  # terminate() was ignored
+            child.escalate_kill()  # grace not expired: no-op, never waits
+            assert child.is_alive()
+            # Age the request past the grace without sleeping for it.
+            child.kill_requested -= _KILL_GRACE_SECONDS + 1
+            child.escalate_kill()
+            deadline = time.monotonic() + 5
+            while child.is_alive() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert child.proc.poll() is not None
+        finally:
+            child.kill()
 
     def test_kill_on_exited_child_is_noop(self) -> None:
         child = RunningChild("g", _spec_for("pass"), timeout=30)

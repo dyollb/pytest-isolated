@@ -142,6 +142,7 @@ class RunningChild:
         self.timed_out = False
         self.started = time.monotonic()
         self.deadline = self.started + timeout
+        self.kill_requested: float | None = None
         self._stdout = _PipeBuffer()
         self._stderr = _PipeBuffer()
         self.proc: subprocess.Popen[bytes] = subprocess.Popen(
@@ -173,6 +174,30 @@ class RunningChild:
 
     def deadline_expired(self) -> bool:
         return time.monotonic() >= self.deadline
+
+    def request_kill(self) -> None:
+        """Start a non-blocking escalating kill: terminate now, decide later.
+
+        The sweep uses this instead of the blocking kill() so one stubborn
+        Child's grace period can never delay the deadline checks (and kill
+        requests) of its running siblings. Safe to call repeatedly or on an
+        exited Child.
+        """
+        if self.proc.poll() is not None or self.kill_requested is not None:
+            return
+        self.proc.terminate()
+        self.kill_requested = time.monotonic()
+
+    def escalate_kill(self) -> None:
+        """Hard-kill a Child whose request_kill() grace period has expired.
+
+        Never waits; call every sweep tick. The Child stays in the running
+        set until it is actually reaped, so the grace can end at any tick.
+        """
+        if self.kill_requested is None or self.proc.poll() is not None:
+            return
+        if time.monotonic() - self.kill_requested >= _KILL_GRACE_SECONDS:
+            self.proc.kill()
 
     def kill(self) -> None:
         """Escalating kill: terminate, grace period, then kill outright.

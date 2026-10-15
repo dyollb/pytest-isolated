@@ -9,10 +9,12 @@ timestamp files for exclusivity. Nothing here inspects plugin internals.
 from __future__ import annotations
 
 import json
+import sys
 import textwrap
 import time
 from pathlib import Path
 
+import pytest
 from pytest import Pytester
 
 
@@ -123,6 +125,47 @@ class TestTimeoutParallel:
         assert "timed out" in stdout
         # Partial-output invariant survives the pool:
         assert "PARALLEL_PARTIAL_MARK" in stdout
+
+
+class TestTimeoutIsolation:
+    @pytest.mark.skipif(sys.platform == "win32", reason="needs an ignorable SIGTERM")
+    def test_stubborn_child_cannot_stall_sibling_timeout(
+        self, pytester: Pytester
+    ) -> None:
+        """A Group whose Child ignores terminate() must not let a sibling
+        that overruns its own deadline be reported as passed.
+
+        The blocking kill() let Child A's grace period freeze the sweep; B
+        exited cleanly during it and skipped the deadline check.
+        """
+        # The handler goes inside the test, not module level: a module-level
+        # call would also run when the module is *imported*, and SIG_IGN
+        # survives fork+exec -- an in-process import would make the whole
+        # outer pytest session (and every Child it spawns afterwards) ignore
+        # SIGTERM.
+        stubborn = (
+            "import pytest, signal, time\n"
+            "pytestmark = pytest.mark.isolated(timeout=2)\n"
+            "def test_stubborn():\n"
+            "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "    time.sleep(30)\n"
+        )
+        # A (deadline ~2s) ignores terminate() and freezes a naive blocking
+        # kill loop until ~7s. B's deadline is ~3s but it finishes cleanly
+        # ~4.5-5s, inside that freeze: the verdict must be a timeout, not
+        # the pass a frozen sweep would reap it as.
+        overrun = (
+            "import pytest, time\n"
+            "pytestmark = pytest.mark.isolated(timeout=3)\n"
+            "def test_overruns_own_deadline():\n"
+            "    time.sleep(4)\n"
+        )
+        pytester.makepyfile(test_stub=stubborn, test_norm=overrun)
+
+        result = pytester.runpytest_subprocess("-q", "--isolated-numprocesses=2")
+
+        result.assert_outcomes(failed=2)
+        assert result.stdout.str().count("timed out") >= 2
 
 
 class TestSerialExclusivity:

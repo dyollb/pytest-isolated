@@ -627,8 +627,11 @@ def _run_group_pool(
                 if child.is_alive():
                     if child.deadline_expired():
                         child.timed_out = True
-                        child.kill()
-                    else:
+                        # Non-blocking: a sibling ignoring terminate() must
+                        # not stall this sweep past other Children's deadlines.
+                        child.request_kill()
+                    child.escalate_kill()
+                    if child.is_alive():
                         continue
                 finished.append(child)
             for child in finished:
