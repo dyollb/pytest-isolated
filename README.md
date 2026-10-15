@@ -228,11 +228,11 @@ pytest --isolated --isolated-numprocesses=auto
 
 #### Switching from pytest-xdist
 
-| pytest-xdist | pytest-isolated |
+| pytest-xdist                       | pytest-isolated                                             |
 | ---------------------------------- | ----------------------------------------------------------- |
-| `-n 4` | `--isolated-numprocesses=4` |
-| `@pytest.mark.xdist_group("name")` | `@pytest.mark.isolated(group="name")` |
-| `-n 4 -x` (drain) | same: in-flight Groups finish, unstarted ones do not launch |
+| `-n 4`                             | `--isolated-numprocesses=4`                                 |
+| `@pytest.mark.xdist_group("name")` | `@pytest.mark.isolated(group="name")`                       |
+| `-n 4 -x` (drain)                  | same: in-flight Groups finish, unstarted ones do not launch |
 
 Unlike xdist, every Child is a complete fresh pytest process for one Group — no
 controller/worker protocol to break on Windows — at the cost of one pytest startup
