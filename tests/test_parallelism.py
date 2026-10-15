@@ -259,6 +259,31 @@ class TestBasetempHardening:
         assert list(groups_root.rglob("child_marker.txt")), "Child artifact deleted"
 
 
+class TestInheritedCacheOptions:
+    """Cache-owned options (--lf/--ff) reach the Child through sources the
+    Parent cannot filter — PYTEST_ADDOPTS and ini addopts. Disabling the
+    cacheprovider plugin unregistered them and crashed the Child's parsing;
+    the cache must stay available (redirected, not disabled)."""
+
+    _BODY = "def test_passes():\n    assert True\n"
+
+    def test_lf_via_pytest_addopts(self, pytester: Pytester, monkeypatch) -> None:
+        pytester.makepyfile(test_c=_module_isolated("c", self._BODY))
+        monkeypatch.setenv("PYTEST_ADDOPTS", "--lf")
+
+        result = pytester.runpytest("-q", "--isolated-numprocesses=2")
+
+        result.assert_outcomes(passed=1)
+
+    def test_ff_via_ini_addopts(self, pytester: Pytester) -> None:
+        pytester.makepyfile(test_c=_module_isolated("c", self._BODY))
+        pytester.makeini("[pytest]\naddopts = --ff\n")
+
+        result = pytester.runpytest("-q", "--isolated-numprocesses=2")
+
+        result.assert_outcomes(passed=1)
+
+
 class TestInProcessTestsAfterDrain:
     def test_mixed_isolated_and_normal_at_n2(self, pytester: Pytester) -> None:
         pytester.makepyfile(

@@ -604,13 +604,16 @@ def _run_group_pool(
                 nodeids = [it.nodeid for it in groups[name]]
                 group_timeout = group_timeouts.get(name) or default_timeout
                 if max_parallel > 1 and basetemp_root is not None:
-                    # Parallel hardening: unique basetemp + no Child cache
-                    # provider (see plan_launch; serial stays unchanged).
+                    # Parallel hardening: unique basetemp + unique fresh
+                    # cache dir per Group (see plan_launch; serial stays
+                    # unchanged). Freshness matters for --lf/--ff inherited
+                    # via env/ini: an empty cache means "run everything",
+                    # matching the Parent's resolved nodeids.
                     spec = plan_launch(
                         config,
                         nodeids,
                         basetemp=str(basetemp_root / f"group-{group_seq}"),
-                        disable_cache=True,
+                        cache_dir=str(basetemp_root / f"cache-{group_seq}"),
                     )
                     group_seq += 1
                 else:

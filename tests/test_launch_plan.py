@@ -184,7 +184,7 @@ class TestReportChannel:
 
 
 class TestParallelHardeningKwargs:
-    """basetemp/disable_cache are opt-in per launch (spec issue #70)."""
+    """basetemp/cache_dir are opt-in per launch (spec issue #70)."""
 
     def test_default_plan_has_no_injection(self, pytester: Pytester) -> None:
         """The serial regression contract: no kwargs -> pre-parallel argv."""
@@ -195,21 +195,30 @@ class TestParallelHardeningKwargs:
 
         assert "--basetemp" not in spec.cmd
         assert "no:cacheprovider" not in spec.cmd
+        assert not any("cache_dir" in tok for tok in spec.cmd)
 
     def test_injection_lands_after_forwarded_args_before_nodeids(
         self, pytester: Pytester
     ) -> None:
-        """Last-wins: injected --basetemp must beat any forwarded one."""
+        """Last-wins: injected --basetemp/-o must beat any forwarded ones."""
         _isolated_file(pytester)
         config = pytester.parseconfig("test_iso.py")
 
         spec = plan_launch(
-            config, ["test_iso.py::test_one"], basetemp="/tmp/grp-0", disable_cache=True
+            config,
+            ["test_iso.py::test_one"],
+            basetemp="/tmp/grp-0",
+            cache_dir="/tmp/cache-0",
         )
 
         cmd = spec.cmd
         assert cmd[-1] == "test_iso.py::test_one"
-        assert cmd[-5:-1] == ["-p", "no:cacheprovider", "--basetemp", "/tmp/grp-0"]
+        assert cmd[-5:-1] == [
+            "-o",
+            "cache_dir=/tmp/cache-0",
+            "--basetemp",
+            "/tmp/grp-0",
+        ]
 
     def test_only_basetemp_kwarg_injects_only_basetemp(
         self, pytester: Pytester
@@ -221,3 +230,4 @@ class TestParallelHardeningKwargs:
 
         assert "--basetemp" in spec.cmd
         assert "no:cacheprovider" not in spec.cmd
+        assert not any("cache_dir" in tok for tok in spec.cmd)

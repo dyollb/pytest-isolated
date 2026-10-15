@@ -47,16 +47,22 @@ def plan_launch(
     nodeids: list[str],
     *,
     basetemp: str | None = None,
-    disable_cache: bool = False,
+    cache_dir: str | None = None,
 ) -> LaunchSpec:
     """Plan an isolated child launch for one group. Pure: no subprocess spawn.
 
     The parallel-hardening kwargs (spec: issue #70) are injected only by the
-    concurrent pool: a unique per-Group basetemp and a disabled cache
-    provider in the Child, so concurrent Children cannot race on pytest's
-    shared basetemp counter or ``.pytest_cache``. They are appended AFTER the
-    forwarded args so an inherited ``--basetemp`` cannot override them.
-    Serial launches pass neither and get the pre-parallel command unchanged.
+    concurrent pool: a unique per-Group basetemp and a unique per-Group cache
+    dir, so concurrent Children cannot race on pytest's shared basetemp
+    counter or one ``.pytest_cache``. The cache is redirected via the
+    ``cache_dir`` ini (``-o``, portable since pytest 7) rather than
+    ``-p no:cacheprovider``: disabling the plugin also unregisters
+    ``--lf``/``--ff``, so those options inherited through ``PYTEST_ADDOPTS``
+    or ini ``addopts`` crashed the Child's argument parsing. With the plugin
+    alive and a fresh per-Group cache, they parse and behave as they do in
+    serial runs. Both are appended AFTER the forwarded args so an inherited
+    ``--basetemp``/``-o`` cannot override them. Serial launches pass neither
+    and get the pre-parallel command unchanged.
     """
     capture_mode = config.getoption("capture", "fd")
 
@@ -77,8 +83,8 @@ def plan_launch(
     # Child args and the single --rootdir come from the forwarding interface.
     cmd.extend(child_args(config))
     # Parallel hardening, injected last so they win over forwarded duplicates.
-    if disable_cache:
-        cmd.extend(["-p", "no:cacheprovider"])
+    if cache_dir is not None:
+        cmd.extend(["-o", f"cache_dir={cache_dir}"])
     if basetemp is not None:
         cmd.extend(["--basetemp", basetemp])
     # The parent-resolved nodeids are the child's positional selectors.

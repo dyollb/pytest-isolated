@@ -219,18 +219,20 @@ pytest --isolated --isolated-numprocesses=auto
   the marker propagates to the whole Group, which then runs alone — nothing else
   launches while it does — and keeps its place in collection order.
 - With `--isolated-numprocesses` > 1, each Child also gets its own `tmp_path`
-  root (under the run's `--basetemp`, when given) and `cacheprovider` disabled.
+  root and its own fresh pytest cache directory (both under the run's
+  `--basetemp`, when given), so concurrent Children never race on shared state —
+  while `--lf`/`--ff` inherited via `PYTEST_ADDOPTS`/`addopts` keep working.
 - Caution: with `-s`/`--capture=no`, Children write straight to the Parent's
   terminal (live, like plain pytest); under parallelism those streams interleave
   and a one-time warning is issued. Test outcomes and reporters stay correct.
 
 #### Switching from pytest-xdist
 
-| pytest-xdist                       | pytest-isolated                                             |
+| pytest-xdist | pytest-isolated |
 | ---------------------------------- | ----------------------------------------------------------- |
-| `-n 4`                             | `--isolated-numprocesses=4`                                 |
-| `@pytest.mark.xdist_group("name")` | `@pytest.mark.isolated(group="name")`                       |
-| `-n 4 -x` (drain)                  | same: in-flight Groups finish, unstarted ones do not launch |
+| `-n 4` | `--isolated-numprocesses=4` |
+| `@pytest.mark.xdist_group("name")` | `@pytest.mark.isolated(group="name")` |
+| `-n 4 -x` (drain) | same: in-flight Groups finish, unstarted ones do not launch |
 
 Unlike xdist, every Child is a complete fresh pytest process for one Group — no
 controller/worker protocol to break on Windows — at the cost of one pytest startup
