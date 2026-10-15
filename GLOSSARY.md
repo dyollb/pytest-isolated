@@ -58,6 +58,28 @@ timeout or crash still yields everything printed so far. The one carve-out: a
 Parent run with capture disabled keeps the Child's capture disabled too.
 _Avoid_: tee-sys hack
 
+### Parallel running
+
+**Group Pool**:
+The Parent's set of concurrently running Children, capped by the process count
+(`--isolated-numprocesses`); pending Groups queue in collection order as slots
+free.
+_Avoid_: worker pool (there are no workers — each Child runs one whole Group)
+
+**Exclusive Group**:
+A Group marked `serial=True`, which runs alone: admitted only while no other
+Child runs, and nothing launches while it does. It keeps its queue position, so
+it can never be starved.
+
+**Burst-on-completion**:
+Each Group's captured output reaches the Parent's terminal as one block when its
+Child finishes, in completion order; reported results keep collection order.
+_Avoid_: streaming (per-Group live output is deliberately not offered)
+
+**Interrupted run**:
+The Parent's outcome when Ctrl-C stops a run: Children are killed and every test
+that never reached teardown is reported as a failure.
+
 ### Option policy
 
 **Blocked option** (Category A):

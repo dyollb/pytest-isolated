@@ -42,8 +42,22 @@ class LaunchSpec(NamedTuple):
     report_path: str
 
 
-def plan_launch(config: pytest.Config, nodeids: list[str]) -> LaunchSpec:
-    """Plan an isolated child launch for one group. Pure: no subprocess spawn."""
+def plan_launch(
+    config: pytest.Config,
+    nodeids: list[str],
+    *,
+    basetemp: str | None = None,
+    disable_cache: bool = False,
+) -> LaunchSpec:
+    """Plan an isolated child launch for one group. Pure: no subprocess spawn.
+
+    The parallel-hardening kwargs (spec: issue #70) are injected only by the
+    concurrent pool: a unique per-Group basetemp and a disabled cache
+    provider in the Child, so concurrent Children cannot race on pytest's
+    shared basetemp counter or ``.pytest_cache``. They are appended AFTER the
+    forwarded args so an inherited ``--basetemp`` cannot override them.
+    Serial launches pass neither and get the pre-parallel command unchanged.
+    """
     capture_mode = config.getoption("capture", "fd")
 
     # Partial-output invariant: -u (in the base command) forces unbuffered
@@ -62,6 +76,11 @@ def plan_launch(config: pytest.Config, nodeids: list[str]) -> LaunchSpec:
         cmd.append("--capture=tee-sys")
     # Child args and the single --rootdir come from the forwarding interface.
     cmd.extend(child_args(config))
+    # Parallel hardening, injected last so they win over forwarded duplicates.
+    if disable_cache:
+        cmd.extend(["-p", "no:cacheprovider"])
+    if basetemp is not None:
+        cmd.extend(["--basetemp", basetemp])
     # The parent-resolved nodeids are the child's positional selectors.
     cmd.extend(nodeids)
 

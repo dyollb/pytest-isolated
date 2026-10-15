@@ -5,22 +5,31 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import subprocess
 import sys
+import tempfile
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Literal, NamedTuple, TypeAlias, cast
+from typing import Final, Literal, NamedTuple, TypeAlias, cast
 
 import pytest
 
 from .config import (
+    CONFIG_ATTR_GROUP_SERIAL,
     CONFIG_ATTR_GROUP_TIMEOUTS,
     CONFIG_ATTR_GROUPS,
     DEFAULT_TIMEOUT,
     SUBPROC_ENV,
+    resolve_numprocesses,
 )
 from .launch import LaunchSpec, plan_launch
+from .pool import (
+    RunningChild,
+    SubprocessResult,
+    decide_admissions,
+    launch_child,
+    poll_interval,
+)
 from .reporting import (
     _emit_failure_for_items,
     _emit_report,
@@ -33,51 +42,18 @@ from .reporting import (
 Phase: TypeAlias = Literal["setup", "call", "teardown"]
 TestResults: TypeAlias = dict[str, dict[str, _TestRecord]]
 
-
-class SubprocessResult(NamedTuple):
-    """Result from running a subprocess."""
-
-    returncode: int
-    stdout: bytes
-    stderr: bytes
-    timed_out: bool
+_PARALLEL_NO_CAPTURE_WARNING: Final = (
+    "pytest-isolated: running Child processes concurrently with capture "
+    "disabled (-s / --capture=no); output from concurrent Children will "
+    "interleave. Without -s, Child output is replayed grouped per test "
+    "(see pytest's -rA / -rf for always-visible grouped output)."
+)
 
 
 class ExecutionContext(NamedTuple):
     """Context for test execution."""
 
     session: pytest.Session
-
-
-def _run_subprocess(
-    spec: LaunchSpec,
-    *,
-    timeout: int,
-) -> SubprocessResult:
-    """Run the planned child subprocess and return its result."""
-    try:
-        proc = subprocess.run(
-            spec.cmd,
-            env=spec.env,
-            timeout=timeout,
-            capture_output=True,
-            check=False,
-            cwd=spec.cwd,
-        )
-        return SubprocessResult(
-            returncode=proc.returncode,
-            stdout=proc.stdout or b"",
-            stderr=proc.stderr or b"",
-            timed_out=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        # TimeoutExpired exception contains partial output captured before timeout
-        return SubprocessResult(
-            returncode=-1,
-            stdout=exc.stdout or b"",
-            stderr=exc.stderr or b"",
-            timed_out=True,
-        )
 
 
 def _parse_results(report_path: str) -> TestResults:
@@ -340,10 +316,13 @@ def _emit_all_results(
 
 
 def pytest_runtestloop(session: pytest.Session) -> int | None:
-    """Execute isolated test groups in subprocesses and remaining tests in-process.
+    """Execute isolated test groups in Child processes and remaining tests
+    in-process.
 
-    Any subprocess timeouts are caught and reported as test failures; the
-    subprocess.TimeoutExpired exception is not propagated to the caller.
+    Subprocess timeouts are caught and reported as test failures; the
+    timeout itself is never propagated. A KeyboardInterrupt instead kills
+    every live Child, reports its Group as Interrupted, and propagates so
+    pytest exits with its usual interrupted status.
     """
     if os.environ.get(SUBPROC_ENV) == "1":
         return None  # child runs the normal loop
@@ -406,82 +385,266 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
     # Create execution context
     ctx = ExecutionContext(session=session)
 
-    # Run groups
-    for group_name, group_items in groups.items():
-        nodeids = [it.nodeid for it in group_items]
+    # Parallelism knob (spec: https://github.com/dyollb/pytest-isolated/issues/70).
+    # Unset means serial: one Child at a time with the pre-parallel Launch plan.
+    raw_n = config.getoption("isolated_numprocesses", None) or config.getini(
+        "isolated_numprocesses"
+    )
+    max_parallel = resolve_numprocesses(raw_n or None)
 
-        # Get timeout for this group (marker timeout > global timeout)
-        group_timeout = group_timeouts.get(group_name) or default_timeout
+    if max_parallel > 1 and config.getoption("capture", "fd") == "no":
+        config.issue_config_time_warning(
+            UserWarning(_PARALLEL_NO_CAPTURE_WARNING), stacklevel=1
+        )
 
-        # Everything the child is told (argv, env, cwd, report file) is
-        # planned by one deep interface; see pytest_isolated.launch.
-        spec = plan_launch(config, nodeids)
+    serial_groups = frozenset(getattr(config, CONFIG_ATTR_GROUP_SERIAL, ()))
 
-        # Run subprocess
-        start_time = time.time()
-        result = _run_subprocess(spec, timeout=group_timeout)
-        execution_time = time.time() - start_time
+    tripped = _run_group_pool(
+        session=session,
+        config=config,
+        ctx=ctx,
+        groups=groups,
+        group_timeouts=group_timeouts,
+        default_timeout=default_timeout,
+        serial_groups=serial_groups,
+        max_parallel=max_parallel,
+    )
+    if tripped:
+        # maxfail/exitfirst: stop after in-flight Children drained; unlaunched
+        # Groups and in-process tests stay silent (xdist shutdown semantics).
+        return 1
 
-        # --setup-show prints fixture lifecycle to terminal output in child.
-        # Re-emit those lines so users can see setup/teardown info for isolated tests.
-        if config.getoption("setupshow", False) and result.stdout:
-            stdout_text = result.stdout.decode("utf-8", errors="replace")
-            setup_lines = [
-                line
-                for line in stdout_text.splitlines()
-                if "SETUP" in line or "TEARDOWN" in line
-            ]
-            if setup_lines:
-                sys.stdout.write("\n".join(setup_lines) + "\n")
-
-        # Parse results
-        results = _parse_results(spec.report_path)
-
-        # Handle various failure conditions
-        if _handle_xfail_crash(result.returncode, results, group_items, ctx):
-            continue
-
-        if _handle_timeout(
-            timed_out=result.timed_out,
-            group_name=group_name,
-            group_timeout=group_timeout,
-            execution_time=execution_time,
-            group_items=group_items,
-            ctx=ctx,
-            stdout=result.stdout,
-            stderr=result.stderr,
-        ):
-            continue
-
-        if _handle_collection_crash(
-            returncode=result.returncode,
-            results=results,
-            group_name=group_name,
-            proc_stderr=result.stderr,
-            group_items=group_items,
-            ctx=ctx,
-        ):
-            continue
-
-        if _handle_mid_test_crash(
-            result.returncode, result.stderr, group_items, results, ctx
-        ):
-            pass  # Continue to emit remaining results
-
-        # Emit normal test results
-        _emit_all_results(group_items, results, ctx)
-
-        # Check if we should exit early due to maxfail/exitfirst
-        if (
-            session.testsfailed
-            and session.config.option.maxfail
-            and session.testsfailed >= session.config.option.maxfail
-        ):
-            return 1
-
-    # Run normal tests in-process
+    # Run normal tests in-process, after the pool has fully drained.
     for idx, item in enumerate(normal_items):
         nextitem = normal_items[idx + 1] if idx + 1 < len(normal_items) else None
         item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
 
     return 1 if session.testsfailed else 0
+
+
+def _process_group_result(
+    *,
+    config: pytest.Config,
+    ctx: ExecutionContext,
+    group_name: str,
+    group_items: list[pytest.Item],
+    spec: LaunchSpec,
+    result: SubprocessResult,
+    group_timeout: int,
+    execution_time: float,
+) -> None:
+    """Classify one finished Child and emit its Group's outcome.
+
+    Shared by the serial and parallel modes: setup-show re-emission, Report
+    channel parsing, the crash/timeout handler chain, and normal emission.
+    Always runs on the Parent's main thread, so each Group's output burst is
+    atomic with respect to other Groups' bursts (completion-order emission).
+    """
+    # --setup-show prints fixture lifecycle to terminal output in child.
+    # Re-emit those lines so users can see setup/teardown info for isolated
+    # tests; in parallel mode this lands inside the Group's completion burst.
+    if config.getoption("setupshow", False) and result.stdout:
+        stdout_text = result.stdout.decode("utf-8", errors="replace")
+        setup_lines = [
+            line
+            for line in stdout_text.splitlines()
+            if "SETUP" in line or "TEARDOWN" in line
+        ]
+        if setup_lines:
+            sys.stdout.write("\n".join(setup_lines) + "\n")
+
+    # Parse results
+    results = _parse_results(spec.report_path)
+
+    # Handle various failure conditions
+    if _handle_xfail_crash(result.returncode, results, group_items, ctx):
+        return
+
+    if _handle_timeout(
+        timed_out=result.timed_out,
+        group_name=group_name,
+        group_timeout=group_timeout,
+        execution_time=execution_time,
+        group_items=group_items,
+        ctx=ctx,
+        stdout=result.stdout,
+        stderr=result.stderr,
+    ):
+        return
+
+    if _handle_collection_crash(
+        returncode=result.returncode,
+        results=results,
+        group_name=group_name,
+        proc_stderr=result.stderr,
+        group_items=group_items,
+        ctx=ctx,
+    ):
+        return
+
+    _handle_mid_test_crash(
+        result.returncode, result.stderr, group_items, results, ctx
+    )  # handled entries are popped; remaining results still get emitted
+
+    # Emit normal test results
+    _emit_all_results(group_items, results, ctx)
+
+
+def _emit_interrupted(
+    ctx: ExecutionContext,
+    group_name: str,
+    group_items: list[pytest.Item],
+    spec: LaunchSpec,
+    result: SubprocessResult,
+) -> None:
+    """Report a killed Child's Group as Interrupted, never as a crash.
+
+    Completed phase records are emitted as-is; tests without a finished
+    teardown are failed with an interruption message carrying the partial
+    output (Partial-output invariant). Groups never launched stay silent --
+    pytest-xdist's shutdown semantics.
+    """
+    msg = (
+        f"Subprocess group={group_name!r} was interrupted "
+        f"(KeyboardInterrupt) before it completed."
+    )
+    stdout_text = result.stdout.decode("utf-8", errors="replace")
+    stderr_text = result.stderr.decode("utf-8", errors="replace")
+    results = _parse_results(spec.report_path)
+    unfinished = [
+        it for it in group_items if "teardown" not in results.get(it.nodeid, {})
+    ]
+    for it in unfinished:
+        results.pop(it.nodeid, None)
+    if unfinished:
+        _emit_failure_for_items(unfinished, msg, ctx.session, stdout_text, stderr_text)
+    _emit_all_results(group_items, results, ctx)
+
+
+def _group_basetemp_root(
+    config: pytest.Config,
+) -> tuple[tempfile.TemporaryDirectory[str] | None, Path]:
+    """Per-Group basetemp root (parallel hardening, spec issue #70).
+
+    Concurrent Children must not share pytest's basetemp counter. Under the
+    Parent's basetemp when it has one (artifacts stay together), otherwise a
+    plugin-owned temp dir cleaned when the pool exits.
+    """
+    parent_basetemp = config.getoption("basetemp", None)
+    if parent_basetemp:
+        root = Path(str(parent_basetemp)) / "isolated-groups"
+        root.mkdir(parents=True, exist_ok=True)
+        return None, root
+    tmp = tempfile.TemporaryDirectory(prefix="pytest-isolated-basetemp-")
+    return tmp, Path(tmp.name)
+
+
+def _maxfail_tripped(session: pytest.Session) -> bool:
+    return bool(
+        session.testsfailed
+        and session.config.option.maxfail
+        and session.testsfailed >= session.config.option.maxfail
+    )
+
+
+def _run_group_pool(
+    *,
+    session: pytest.Session,
+    config: pytest.Config,
+    ctx: ExecutionContext,
+    groups: OrderedDict[str, list[pytest.Item]],
+    group_timeouts: dict[str, int | None],
+    default_timeout: int,
+    serial_groups: frozenset[str],
+    max_parallel: int,
+) -> bool:
+    """Run every Group through the Child Pool; True if maxfail tripped.
+
+    One loop serves both modes: ``max_parallel == 1`` degenerates to the
+    historical serial order (identical Launch plans, one Child alive at a
+    time). Ctrl-C kills all live Children, reports their Groups as
+    Interrupted, and re-raises for pytest's normal interrupted-exit path.
+    """
+    pending = list(groups)
+    running: OrderedDict[str, RunningChild] = OrderedDict()
+    group_seq = 0
+    tripped = False
+    basetemp_ctx: tempfile.TemporaryDirectory[str] | None = None
+    basetemp_root: Path | None = None
+    if max_parallel > 1:
+        basetemp_ctx, basetemp_root = _group_basetemp_root(config)
+    try:
+        while pending or running:
+            for name in decide_admissions(
+                pending=pending,
+                running_count=len(running),
+                serial=serial_groups,
+                max_parallel=max_parallel,
+                maxfail_tripped=tripped,
+                exclusive_running=any(
+                    child.name in serial_groups for child in running.values()
+                ),
+            ):
+                pending.remove(name)
+                nodeids = [it.nodeid for it in groups[name]]
+                group_timeout = group_timeouts.get(name) or default_timeout
+                if max_parallel > 1 and basetemp_root is not None:
+                    # Parallel hardening: unique basetemp + no Child cache
+                    # provider (see plan_launch; serial stays unchanged).
+                    spec = plan_launch(
+                        config,
+                        nodeids,
+                        basetemp=str(basetemp_root / f"group-{group_seq}"),
+                        disable_cache=True,
+                    )
+                    group_seq += 1
+                else:
+                    spec = plan_launch(config, nodeids)
+                running[name] = launch_child(name, spec, timeout=group_timeout)
+
+            finished: list[RunningChild] = []
+            for child in running.values():
+                if child.is_alive():
+                    if child.deadline_expired():
+                        child.timed_out = True
+                        child.kill()
+                    else:
+                        continue
+                finished.append(child)
+            for child in finished:
+                del running[child.name]
+                result = child.finish()
+                _process_group_result(
+                    config=config,
+                    ctx=ctx,
+                    group_name=child.name,
+                    group_items=groups[child.name],
+                    spec=child.spec,
+                    result=result,
+                    group_timeout=(group_timeouts.get(child.name) or default_timeout),
+                    execution_time=time.monotonic() - child.started,
+                )
+                if _maxfail_tripped(session):
+                    tripped = True
+
+            if tripped and not running:
+                # Drain complete (xdist exitfirst semantics): pending Groups
+                # deliberately never launch; without this the loop would spin
+                # with nothing left to admit or reap.
+                break
+
+            if pending or running:
+                time.sleep(poll_interval())
+    except KeyboardInterrupt:
+        for child in running.values():
+            child.kill()
+        for child in running.values():
+            _emit_interrupted(
+                ctx, child.name, groups[child.name], child.spec, child.finish()
+            )
+        running.clear()
+        raise
+    finally:
+        if basetemp_ctx is not None:
+            basetemp_ctx.cleanup()
+    return tripped

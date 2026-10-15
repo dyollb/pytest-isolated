@@ -181,3 +181,43 @@ class TestReportChannel:
         second = plan_launch(config, ["test_iso.py::test_one"])
 
         assert first.report_path != second.report_path
+
+
+class TestParallelHardeningKwargs:
+    """basetemp/disable_cache are opt-in per launch (spec issue #70)."""
+
+    def test_default_plan_has_no_injection(self, pytester: Pytester) -> None:
+        """The serial regression contract: no kwargs -> pre-parallel argv."""
+        _isolated_file(pytester)
+        config = pytester.parseconfig("test_iso.py")
+
+        spec = plan_launch(config, ["test_iso.py::test_one"])
+
+        assert "--basetemp" not in spec.cmd
+        assert "no:cacheprovider" not in spec.cmd
+
+    def test_injection_lands_after_forwarded_args_before_nodeids(
+        self, pytester: Pytester
+    ) -> None:
+        """Last-wins: injected --basetemp must beat any forwarded one."""
+        _isolated_file(pytester)
+        config = pytester.parseconfig("test_iso.py")
+
+        spec = plan_launch(
+            config, ["test_iso.py::test_one"], basetemp="/tmp/grp-0", disable_cache=True
+        )
+
+        cmd = spec.cmd
+        assert cmd[-1] == "test_iso.py::test_one"
+        assert cmd[-5:-1] == ["-p", "no:cacheprovider", "--basetemp", "/tmp/grp-0"]
+
+    def test_only_basetemp_kwarg_injects_only_basetemp(
+        self, pytester: Pytester
+    ) -> None:
+        _isolated_file(pytester)
+        config = pytester.parseconfig("test_iso.py")
+
+        spec = plan_launch(config, ["test_iso.py::test_one"], basetemp="/tmp/grp-1")
+
+        assert "--basetemp" in spec.cmd
+        assert "no:cacheprovider" not in spec.cmd

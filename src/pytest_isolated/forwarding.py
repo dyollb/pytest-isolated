@@ -91,6 +91,7 @@ PARENT_HANDLED_OPTIONS: Final[frozenset[str]] = frozenset(
         "--rootdir",
         "--isolated",
         "--isolated-timeout",
+        "--isolated-numprocesses",
         "--no-isolation",
     }
 )
