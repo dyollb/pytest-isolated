@@ -12,7 +12,7 @@ import pytest
 from .config import SUBPROC_REPORT_PATH
 
 
-def _get_xfail_reason(item: pytest.Item) -> str | None:
+def get_xfail_reason(item: pytest.Item) -> str | None:
     """Extract xfail reason from marker if present.
 
     Returns the xfail reason string, or None if no xfail marker.
@@ -63,10 +63,12 @@ def _format_crash_reason(returncode: int) -> str:
     return f"crashed with exit code {returncode}"
 
 
-def _format_crash_message(
+def format_crash_message(
     returncode: int,
     context: str,
     stderr_text: str = "",
+    *,
+    message_prefix: str | None = None,
 ) -> str:
     """Build a complete crash error message with optional stderr output.
 
@@ -74,12 +76,17 @@ def _format_crash_message(
         returncode: The subprocess return code.
         context: Description of when the crash occurred (e.g., "during test execution").
         stderr_text: Optional captured stderr from the subprocess.
+        message_prefix: Optional contextual message to use before captured stderr.
 
     Returns:
         A formatted error message suitable for test failure reports.
     """
     reason = _format_crash_reason(returncode)
-    msg = f"Subprocess {reason} {context}."
+    msg = (
+        message_prefix
+        if message_prefix is not None
+        else f"Subprocess {reason} {context}."
+    )
     if stderr_text:
         msg += f"\n\nSubprocess stderr:\n{stderr_text}"
     return msg
@@ -112,7 +119,7 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         f.write(json.dumps(rec) + "\n")
 
 
-def _emit_report(
+def emit_report(
     item: pytest.Item,
     *,
     when: Literal["setup", "call", "teardown"],
@@ -159,7 +166,7 @@ def _emit_report(
     item.ihook.pytest_runtest_logreport(report=rep)
 
 
-def _emit_failure_for_items(
+def emit_failure_for_items(
     items: list[pytest.Item],
     error_message: str,
     session: pytest.Session,
@@ -183,10 +190,10 @@ def _emit_failure_for_items(
     empty output in later phases can clear the captured output from earlier phases.
     """
     for it in items:
-        xfail_reason = _get_xfail_reason(it)
-        _emit_report(it, when="setup", outcome="passed", stdout=stdout, stderr=stderr)
+        xfail_reason = get_xfail_reason(it)
+        emit_report(it, when="setup", outcome="passed", stdout=stdout, stderr=stderr)
         if xfail_reason:
-            _emit_report(
+            emit_report(
                 it,
                 when="call",
                 outcome="skipped",
@@ -196,7 +203,7 @@ def _emit_failure_for_items(
                 stderr=stderr,
             )
         else:
-            _emit_report(
+            emit_report(
                 it,
                 when="call",
                 outcome="failed",
@@ -205,6 +212,4 @@ def _emit_failure_for_items(
                 stderr=stderr,
             )
             session.testsfailed += 1
-        _emit_report(
-            it, when="teardown", outcome="passed", stdout=stdout, stderr=stderr
-        )
+        emit_report(it, when="teardown", outcome="passed", stdout=stdout, stderr=stderr)
