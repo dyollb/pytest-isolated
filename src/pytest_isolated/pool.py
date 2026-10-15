@@ -6,9 +6,10 @@ processes alive at once instead of exactly one. This module owns two things:
 - the pure admission decision (which Groups may launch this tick), so the
   scheduling rules -- slot accounting, Exclusive (serial) gating, the maxfail
   launch-gate, collection order -- are testable without spawning anything;
-- the imperative Child mechanics: spawn with drained pipes, deadline-based
-  timeout with manual partial-output capture (the Partial-output invariant
-  under ``Popen``), and escalation kill for timeout and Interrupted paths.
+- the imperative Child mechanics: spawn with drained pipes (or inherited
+  stdio when the Parent's capture is disabled), deadline-based timeout with
+  manual partial-output capture (the Partial-output invariant under
+  ``Popen``), and escalation kill for timeout and Interrupted paths.
 
 Deliberately stdlib-only (subprocess + threads + monotonic clock): the pool
 stays Windows-safe by construction, the same reason the plugin exists instead
@@ -105,9 +106,23 @@ class _PipeBuffer:
 
 
 class RunningChild:
-    """One live Child: handle, drained-pipe buffers, deadline bookkeeping."""
+    """One live Child: handle, drained-pipe buffers, deadline bookkeeping.
 
-    def __init__(self, name: str, spec: LaunchSpec, *, timeout: float) -> None:
+    ``capture=False`` (Parent runs with capture disabled, ``-s``) inherits the
+    Parent's terminal instead of piping: output reaches the user live and
+    interleaved, matching plain pytest's ``-s`` promise. The buffers stay
+    empty in that mode, so failure notices carry no attached output -- the
+    output already went to the terminal.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        spec: LaunchSpec,
+        *,
+        timeout: float,
+        capture: bool = True,
+    ) -> None:
         self.name = name
         self.spec = spec
         self.timed_out = False
@@ -119,9 +134,13 @@ class RunningChild:
             spec.cmd,
             env=spec.env,
             cwd=spec.cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.PIPE if capture else None,
         )
+        if not capture:
+            self._out_thread = None
+            self._err_thread = None
+            return
         self._out_thread = threading.Thread(
             target=self._stdout.consume,
             args=(self.proc.stdout,),
@@ -163,8 +182,9 @@ class RunningChild:
         returncode = self.proc.poll()
         if returncode is None:  # pragma: no cover - caller reaps only after exit
             returncode = self.proc.wait()
-        self._out_thread.join(timeout=_DRAIN_JOIN_TIMEOUT_SECONDS)
-        self._err_thread.join(timeout=_DRAIN_JOIN_TIMEOUT_SECONDS)
+        for thread in (self._out_thread, self._err_thread):
+            if thread is not None:
+                thread.join(timeout=_DRAIN_JOIN_TIMEOUT_SECONDS)
         return SubprocessResult(
             returncode=returncode,
             stdout=self._stdout.value(),
@@ -173,9 +193,11 @@ class RunningChild:
         )
 
 
-def launch_child(name: str, spec: LaunchSpec, *, timeout: float) -> RunningChild:
+def launch_child(
+    name: str, spec: LaunchSpec, *, timeout: float, capture: bool = True
+) -> RunningChild:
     """Spawn one planned Child with its timeout deadline armed."""
-    return RunningChild(name, spec, timeout=timeout)
+    return RunningChild(name, spec, timeout=timeout, capture=capture)
 
 
 def poll_interval() -> float:

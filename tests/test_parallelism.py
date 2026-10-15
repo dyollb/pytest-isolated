@@ -252,11 +252,27 @@ class TestInProcessTestsAfterDrain:
 class TestCaptureDisabledWarning:
     def test_warns_once_when_s_with_parallel(self, pytester: Pytester) -> None:
         pytester.makepyfile(
-            test_w=_module_isolated("w", "def test_ok():\n    assert True\n")
+            test_w=_module_isolated(
+                "w",
+                "def test_ok():\n    print('S-MARKER-LIVE')\n    assert True\n",
+            )
         )
-        result = pytester.runpytest("-q", "-s", "--isolated-numprocesses=2")
+        result = pytester.runpytest_subprocess("-q", "-s", "--isolated-numprocesses=2")
         result.assert_outcomes(passed=1)
         assert result.stdout.str().count("will interleave") == 1
+        # Children inherit the terminal under -s: the print must be visible.
+        assert "S-MARKER-LIVE" in result.stdout.str()
+
+    def test_s_output_visible_in_serial_mode(self, pytester: Pytester) -> None:
+        pytester.makepyfile(
+            test_w=_module_isolated(
+                "w",
+                "def test_ok():\n    print('S-MARKER-SERIAL')\n    assert True\n",
+            )
+        )
+        result = pytester.runpytest_subprocess("-q", "-s")
+        result.assert_outcomes(passed=1)
+        assert "S-MARKER-SERIAL" in result.stdout.str()
 
     def test_no_warning_without_s(self, pytester: Pytester) -> None:
         pytester.makepyfile(

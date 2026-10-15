@@ -44,9 +44,10 @@ TestResults: TypeAlias = dict[str, dict[str, _TestRecord]]
 
 _PARALLEL_NO_CAPTURE_WARNING: Final = (
     "pytest-isolated: running Child processes concurrently with capture "
-    "disabled (-s / --capture=no); output from concurrent Children will "
-    "interleave. Without -s, Child output is replayed grouped per test "
-    "(see pytest's -rA / -rf for always-visible grouped output)."
+    "disabled (-s / --capture=no); Child output goes straight to this "
+    "terminal and will interleave. Without -s, Child output is replayed "
+    "grouped per test (see pytest's -rA / -rf for always-visible grouped "
+    "output)."
 )
 
 
@@ -396,6 +397,9 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         config.issue_config_time_warning(
             UserWarning(_PARALLEL_NO_CAPTURE_WARNING), stacklevel=1
         )
+    # With Parent capture disabled, Children inherit the terminal (live,
+    # interleaved) instead of being piped -- plain pytest -s semantics.
+    capture_output = config.getoption("capture", "fd") != "no"
 
     serial_groups = frozenset(getattr(config, CONFIG_ATTR_GROUP_SERIAL, ()))
 
@@ -408,6 +412,7 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         default_timeout=default_timeout,
         serial_groups=serial_groups,
         max_parallel=max_parallel,
+        capture_output=capture_output,
     )
     if tripped:
         # maxfail/exitfirst: stop after in-flight Children drained; unlaunched
@@ -557,6 +562,7 @@ def _run_group_pool(
     default_timeout: int,
     serial_groups: frozenset[str],
     max_parallel: int,
+    capture_output: bool = True,
 ) -> bool:
     """Run every Group through the Child Pool; True if maxfail tripped.
 
@@ -600,7 +606,9 @@ def _run_group_pool(
                     group_seq += 1
                 else:
                     spec = plan_launch(config, nodeids)
-                running[name] = launch_child(name, spec, timeout=group_timeout)
+                running[name] = launch_child(
+                    name, spec, timeout=group_timeout, capture=capture_output
+                )
 
             finished: list[RunningChild] = []
             for child in running.values():

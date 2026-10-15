@@ -55,7 +55,8 @@ _Avoid_: recursion guard (it is what makes a Child a Child, not just a guard)
 **Partial-output invariant**:
 Every Child runs with unbuffered output duplicated to the Parent's view, so a
 timeout or crash still yields everything printed so far. The one carve-out: a
-Parent run with capture disabled keeps the Child's capture disabled too.
+Parent run with capture disabled (`-s`) gives the Child the shared terminal
+directly — output is live and interleaved, and nothing is attached afterward.
 _Avoid_: tee-sys hack
 
 ### Parallel running
@@ -63,18 +64,16 @@ _Avoid_: tee-sys hack
 **Group Pool**:
 The Parent's set of concurrently running Children, capped by the process count
 (`--isolated-numprocesses`); pending Groups queue in collection order as slots
-free.
-_Avoid_: worker pool (there are no workers — each Child runs one whole Group)
+free. Each Group's captured output reaches the Parent's terminal as one block
+when its Child finishes (completion order); reported results keep collection
+order.
+_Avoid_: worker pool (there are no workers — each Child runs one whole Group),
+burst-on-completion (a property of the Pool, not its own thing)
 
 **Exclusive Group**:
 A Group marked `serial=True`, which runs alone: admitted only while no other
 Child runs, and nothing launches while it does. It keeps its queue position, so
 it can never be starved.
-
-**Burst-on-completion**:
-Each Group's captured output reaches the Parent's terminal as one block when its
-Child finishes, in completion order; reported results keep collection order.
-_Avoid_: streaming (per-Group live output is deliberately not offered)
 
 **Interrupted run**:
 The Parent's outcome when Ctrl-C stops a run: Children are killed and every test

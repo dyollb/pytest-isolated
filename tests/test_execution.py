@@ -236,7 +236,7 @@ def test_timeout_captures_partial_output_from_test(pytester: Pytester):
     """
     )
 
-    result = pytester.runpytest("-v", "-s", "--isolated-timeout=1")
+    result = pytester.runpytest_subprocess("-v", "-s", "--isolated-timeout=1")
     result.assert_outcomes(failed=1)
     stdout = result.stdout.str()
     assert "timed out" in stdout
@@ -253,8 +253,8 @@ def test_timeout_during_fixture_setup(pytester: Pytester):
     When fixture setup itself times out, we should capture output up to
     that point but not output from the test body (which never runs).
 
-    Uses -s to disable output capturing so prints go to stdout, which we
-    then capture from the subprocess.
+    Uses -s to disable output capturing; the Child inherits the Parent's
+    terminal, so output is visible live (subprocess mode captures it).
     """
     pytester.makepyfile(
         """
@@ -276,7 +276,7 @@ def test_timeout_during_fixture_setup(pytester: Pytester):
     """
     )
 
-    result = pytester.runpytest("-v", "-s", "--isolated-timeout=1")
+    result = pytester.runpytest_subprocess("-v", "-s", "--isolated-timeout=1")
     result.assert_outcomes(failed=1)
     stdout = result.stdout.str()
     assert "timed out" in stdout

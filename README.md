@@ -220,8 +220,9 @@ pytest --isolated --isolated-numprocesses=auto
   launches while it does — and keeps its place in collection order.
 - With `--isolated-numprocesses` > 1, each Child also gets its own `tmp_path`
   root (under the run's `--basetemp`, when given) and `cacheprovider` disabled.
-- Caution: `-s`/`--capture=no` with parallelism interleaves live Child stdout in
-  the Parent's terminal (a one-time warning is issued). Reporting stays correct.
+- Caution: with `-s`/`--capture=no`, Children write straight to the Parent's
+  terminal (live, like plain pytest); under parallelism those streams interleave
+  and a one-time warning is issued. Test outcomes and reporters stay correct.
 
 #### Switching from pytest-xdist
 
@@ -394,10 +395,11 @@ if os.environ.get("PYTEST_RUNNING_IN_SUBPROCESS") == "1":
 
 **Tests timing out**: Increase timeout with `--isolated-timeout=600`
 
-**Interleaved output with `-s`**: Live output from concurrent Children mixes in the
-Parent's terminal when `--isolated-numprocesses` > 1. Reported stdout/stderr per test
-is unaffected; drop back to serial (`--isolated-numprocesses=1`) if you need strictly
-ordered live output.
+**Interleaved output with `-s`**: With capture disabled, Children write straight to the
+Parent's terminal (as with plain pytest), so concurrent Children interleave when
+`--isolated-numprocesses` > 1. Nothing is captured for per-test reports in that mode —
+drop `-s` if you want output attached to failures, or drop to serial
+(`--isolated-numprocesses=1`) if you need strictly ordered live output.
 
 **Missing output**: Use `-s` or `--capture=no` to see output from passing tests, or `-v` for verbose output. pytest-isolated respects pytest's standard capture settings.
 
