@@ -531,15 +531,24 @@ def _group_basetemp_root(
 ) -> tuple[tempfile.TemporaryDirectory[str] | None, Path]:
     """Per-Group basetemp root (parallel hardening, spec issue #70).
 
-    Concurrent Children must not share pytest's basetemp counter. Under the
-    Parent's basetemp when it has one (artifacts stay together), otherwise a
-    plugin-owned temp dir cleaned when the pool exits.
+    Concurrent Children must not share pytest's basetemp counter. The tree
+    lives inside the Parent's resolved basetemp (artifacts stay together and
+    pytest's retention rules apply); with the tmpdir plugin disabled there is
+    no factory, so a plugin-owned temp dir cleaned at pool exit is used.
+
+    Resolution goes through the Parent's TempPathFactory on purpose: for a
+    user-given --basetemp, pytest's factory rm_rf's that directory lazily at
+    the first in-process tmp_path. Resolving here performs the wipe before
+    any Child writes and caches the result, so the later lazy call can never
+    delete finished Children's artifacts from under us.
     """
-    parent_basetemp = config.getoption("basetemp", None)
-    if parent_basetemp:
-        root = Path(str(parent_basetemp)) / "isolated-groups"
+    factory = getattr(config, "_tmp_path_factory", None)
+    if factory is not None:
+        root = Path(factory.getbasetemp()) / "isolated-groups"
         root.mkdir(parents=True, exist_ok=True)
         return None, root
+    # tmpdir plugin disabled (e.g. -p no:tmpdir): no factory to resolve
+    # through, and the option may still be set — own our cleanup instead.
     tmp = tempfile.TemporaryDirectory(prefix="pytest-isolated-basetemp-")
     return tmp, Path(tmp.name)
 

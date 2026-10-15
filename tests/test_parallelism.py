@@ -228,6 +228,36 @@ class TestBasetempHardening:
         assert t1 != t2
         assert Path(t1).is_dir() and Path(t2).is_dir()
 
+    def test_inproc_tmp_path_does_not_wipe_group_artifacts(
+        self, pytester: Pytester
+    ) -> None:
+        """A user-given --basetemp is rm_rf'd lazily by pytest's factory at
+        the first in-process tmp_path; the Parent must resolve that wipe
+        before any Child writes, or finished Children's artifacts vanish."""
+        bt = pytester.path / "bt"
+        pytester.makepyfile(
+            test_iso=_module_isolated(
+                "iso",
+                """
+                def test_leave_artifact(tmp_path):
+                    (tmp_path / "child_marker.txt").write_text("keep me")
+                """,
+            ),
+            test_inproc="""
+            def test_needs_tmp_path(tmp_path):
+                assert tmp_path.is_dir()
+            """,
+        )
+
+        result = pytester.runpytest(
+            "-q", "--isolated-numprocesses=2", "--basetemp", str(bt)
+        )
+        result.assert_outcomes(passed=2)
+
+        groups_root = bt / "isolated-groups"
+        assert groups_root.is_dir(), "in-process factory cleared the groups tree"
+        assert list(groups_root.rglob("child_marker.txt")), "Child artifact deleted"
+
 
 class TestInProcessTestsAfterDrain:
     def test_mixed_isolated_and_normal_at_n2(self, pytester: Pytester) -> None:
