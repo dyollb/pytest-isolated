@@ -165,7 +165,7 @@ class TestResolveNumprocesses:
             monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set())
             monkeypatch.setattr(os, "cpu_count", lambda: 7)
         else:  # pragma: no cover - Windows
-            monkeypatch.delattr(os, "process_cpu_count", raising=True)
+            monkeypatch.delattr(os, "process_cpu_count", raising=False)
             monkeypatch.setattr(os, "cpu_count", lambda: 7)
         assert resolve_numprocesses("auto") == 7
 
@@ -200,8 +200,12 @@ class TestRunningChildLifecycle:
             time.sleep(0.01)
         result = child.finish()
         assert result.returncode == 0
-        assert result.stdout == b"hello\n"
-        assert result.stderr == b"err\n"
+        # On Windows, CPython text-mode stdout translates \n to \r\n when the
+        # pipe is not a console; compare platform-normalized output.
+        stdout = result.stdout.replace(b"\r\n", b"\n")
+        stderr = result.stderr.replace(b"\r\n", b"\n")
+        assert stdout == b"hello\n"
+        assert stderr == b"err\n"
         assert result.timed_out is False
 
     def test_kill_terminates_and_leaves_no_live_process(self) -> None:
@@ -232,4 +236,4 @@ class TestRunningChildLifecycle:
             time.sleep(0.01)
         child.kill()
         result = child.finish()
-        assert b"early output" in result.stdout
+        assert b"early output" in result.stdout.replace(b"\r\n", b"\n")
