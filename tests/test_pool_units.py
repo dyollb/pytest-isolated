@@ -17,10 +17,12 @@ import os
 import sys
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 import pytest
 
+from pytest_isolated import execution
 from pytest_isolated.config import resolve_numprocesses
 from pytest_isolated.launch import LaunchSpec
 from pytest_isolated.pool import (
@@ -331,3 +333,54 @@ class TestPipeBufferIncremental:
             thread.join(timeout=5)
         assert not thread.is_alive()
         assert buffer.value() == b"first chunk + second"
+
+
+class _FakeItem:
+    def __init__(self, nodeid: str) -> None:
+        self.nodeid = nodeid
+
+
+class TestPoolErrorCleanup:
+    def test_launch_failure_kills_running_children(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A spawn failure partway through a batch must not leave the already
+        # launched Child running (or orphaned past the pool's cleanup).
+        started: list[RunningChild] = []
+
+        def fake_launch_child(name, spec, *, timeout, capture=True):  # type: ignore[no-untyped-def]
+            child = RunningChild(name, spec, timeout=timeout, capture=capture)
+            started.append(child)
+            return child
+
+        launches = {"n": 0}
+
+        def fake_plan_launch(config, nodeids, **kwargs):  # type: ignore[no-untyped-def]
+            launches["n"] += 1
+            if launches["n"] > 1:
+                raise OSError("simulated spawn failure")
+            return _spec_for("import time; time.sleep(30)")
+
+        monkeypatch.setattr(execution, "launch_child", fake_launch_child)
+        monkeypatch.setattr(execution, "plan_launch", fake_plan_launch)
+
+        groups: OrderedDict[str, list[_FakeItem]] = OrderedDict(
+            g1=[_FakeItem("g1::test_a")],
+            g2=[_FakeItem("g2::test_a")],
+        )
+        with pytest.raises(OSError, match="simulated spawn failure"):
+            execution._run_group_pool(
+                session=None,  # type: ignore[arg-type]
+                config=None,  # type: ignore[arg-type]
+                ctx=execution.ExecutionContext(session=None),  # type: ignore[arg-type]
+                groups=groups,
+                group_timeouts={},
+                default_timeout=600,
+                serial_groups=frozenset(),
+                max_parallel=2,
+                capture_output=True,
+            )
+        assert started  # the first Child really launched
+        for child in started:
+            assert child.proc.wait(timeout=10) is not None

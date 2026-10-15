@@ -667,6 +667,22 @@ def _run_group_pool(
             )
         running.clear()
         raise
+    except BaseException:
+        # Any other failure (a launch OSError, an emit or parsing bug) must
+        # not leave Children running, nor let the finally block below delete
+        # their directories while they still write to them. Kill and reap
+        # every Child, then let the original error propagate -- the error is
+        # the report, so nothing is emitted here. Per-Child suppression so
+        # one unhealthy Child cannot mask the original exception or skip the
+        # rest.
+        for child in running.values():
+            with contextlib.suppress(Exception):
+                child.kill()
+        for child in running.values():
+            with contextlib.suppress(Exception):
+                child.finish()
+        running.clear()
+        raise
     finally:
         if basetemp_ctx is not None:
             basetemp_ctx.cleanup()
