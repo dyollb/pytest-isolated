@@ -1,11 +1,15 @@
 """The Group Pool: scheduling decisions and Child mechanics for parallel runs.
 
 When ``--isolated-numprocesses`` is above 1 the Parent keeps up to N Child
-processes alive at once instead of exactly one. This module owns two things:
+processes alive at once instead of exactly one. This module owns three things:
 
 - the pure admission decision (which Groups may launch this tick), so the
   scheduling rules -- slot accounting, Exclusive (serial) gating, the maxfail
   launch-gate, collection order -- are testable without spawning anything;
+- the pure sweep decision (what happens to each live Child this tick), so the
+  timeout/terminate-grace/reap policy -- the run's timeout contract -- is
+  testable as a table of plain values on every platform. Spec:
+  https://github.com/dyollb/pytest-isolated/issues/72
 - the imperative Child mechanics: spawn with drained pipes (or inherited
   stdio when the Parent's capture is disabled), deadline-based timeout with
   manual partial-output capture (the Partial-output invariant under
@@ -27,7 +31,7 @@ import threading
 import time
 from collections.abc import Sequence
 from collections.abc import Set as AbstractSet
-from typing import BinaryIO, Final, NamedTuple
+from typing import BinaryIO, Final, NamedTuple, TypeAlias
 
 from .launch import LaunchSpec
 
@@ -55,6 +59,69 @@ class SubprocessResult(NamedTuple):
     stdout: bytes
     stderr: bytes
     timed_out: bool
+
+
+class ChildState(NamedTuple):
+    """One Child's plain-value snapshot for the sweep decision.
+
+    ``alive`` comes from one ``poll()`` per live Child per tick; ``deadline``
+    and ``kill_requested`` are the Child's own monotonic clock fields (set
+    when the Child was launched, and when a terminate was requested).
+    """
+
+    name: str
+    alive: bool
+    deadline: float
+    kill_requested: float | None
+
+
+class TerminateForTimeout(NamedTuple):
+    """Decided action: mark the Group timed out and request terminate."""
+
+    name: str
+
+
+class EscalateToKill(NamedTuple):
+    """Decided action: hard-kill a Child whose terminate grace has expired."""
+
+    name: str
+
+
+class Reap(NamedTuple):
+    """Decided action: collect a finished Child's result and report it."""
+
+    name: str
+
+
+SweepAction: TypeAlias = TerminateForTimeout | EscalateToKill | Reap
+
+
+def decide_sweeps(
+    states: Sequence[ChildState],
+    now: float,
+    grace: float = _KILL_GRACE_SECONDS,
+) -> list[SweepAction]:
+    """Return this tick's actions for every Child, in running order.
+
+    Pure policy (spec: https://github.com/dyollb/pytest-isolated/issues/72):
+    plain values in, decided actions out -- no process, no clock, no
+    filesystem. The caller applies each action through the Child's mechanics
+    adapters. One Child's state never suppresses another's action: a sibling
+    sitting in its terminate grace cannot stall anyone else's deadline check
+    (the bug fixed by https://github.com/dyollb/pytest-isolated/commit/1d45d24).
+    Reaps appear in running order so same-tick emission order stays stable.
+    """
+    actions: list[SweepAction] = []
+    for st in states:
+        if not st.alive:
+            actions.append(Reap(st.name))
+            continue
+        if st.kill_requested is not None:
+            if now - st.kill_requested >= grace:
+                actions.append(EscalateToKill(st.name))
+        elif now >= st.deadline:
+            actions.append(TerminateForTimeout(st.name))
+    return actions
 
 
 def decide_admissions(
@@ -172,8 +239,17 @@ class RunningChild:
     def is_alive(self) -> bool:
         return self.proc.poll() is None
 
-    def deadline_expired(self) -> bool:
-        return time.monotonic() >= self.deadline
+    def sweep_state(self) -> ChildState:
+        """Plain-value snapshot of this Child for ``decide_sweeps``.
+
+        One ``poll()`` per tick; the clock fields stay owned by the Child.
+        """
+        return ChildState(
+            name=self.name,
+            alive=self.proc.poll() is None,
+            deadline=self.deadline,
+            kill_requested=self.kill_requested,
+        )
 
     def request_kill(self) -> None:
         """Start a non-blocking escalating kill: terminate now, decide later.

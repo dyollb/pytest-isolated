@@ -70,6 +70,15 @@ order.
 _Avoid_: worker pool (there are no workers — each Child runs one whole Group),
 burst-on-completion (a property of the Pool, not its own thing)
 
+**Sweep Tick**:
+One round of the Group Pool's running cycle: Snapshot each live Child's plain
+facts (liveness from one poll, its deadline, when a terminate was requested),
+Decide what each Child gets (terminate-for-timeout, escalate-to-kill, reap),
+Apply the decisions through the Child's mechanics, and Reap finished Children
+in running order. The timeout contract lives in the Decide step, not the loop.
+_Avoid_: polling loop, housekeeping (the four stages are the term, not a
+mechanism description)
+
 **Exclusive Group**:
 A Group marked `serial=True`, which runs alone: admitted only while no other
 Child runs, and nothing launches while it does. It keeps its queue position, so

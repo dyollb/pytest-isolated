@@ -24,9 +24,13 @@ from .config import (
 )
 from .launch import LaunchSpec, plan_launch
 from .pool import (
+    EscalateToKill,
+    Reap,
     RunningChild,
     SubprocessResult,
+    TerminateForTimeout,
     decide_admissions,
+    decide_sweeps,
     launch_child,
     poll_interval,
 )
@@ -622,33 +626,41 @@ def _run_group_pool(
                     name, spec, timeout=group_timeout, capture=capture_output
                 )
 
-            finished: list[RunningChild] = []
-            for child in running.values():
-                if child.is_alive():
-                    if child.deadline_expired():
-                        child.timed_out = True
-                        # Non-blocking: a sibling ignoring terminate() must
-                        # not stall this sweep past other Children's deadlines.
-                        child.request_kill()
+            # Sweep tick: snapshot the Children's plain facts, ask the pure
+            # policy what each one gets, apply it. Reaps report on this
+            # thread, in running order (completion-order emission).
+            for action in decide_sweeps(
+                [child.sweep_state() for child in running.values()],
+                time.monotonic(),
+            ):
+                child = running[action.name]
+                if isinstance(action, TerminateForTimeout):
+                    # The applied action carries the timeout verdict. The
+                    # request is non-blocking: a sibling ignoring terminate()
+                    # cannot stall this sweep past other Children's deadlines.
+                    # Spec: https://github.com/dyollb/pytest-isolated/issues/72
+                    child.timed_out = True
+                    child.request_kill()
+                elif isinstance(action, EscalateToKill):
                     child.escalate_kill()
-                    if child.is_alive():
-                        continue
-                finished.append(child)
-            for child in finished:
-                del running[child.name]
-                result = child.finish()
-                _process_group_result(
-                    config=config,
-                    ctx=ctx,
-                    group_name=child.name,
-                    group_items=groups[child.name],
-                    spec=child.spec,
-                    result=result,
-                    group_timeout=(group_timeouts.get(child.name) or default_timeout),
-                    execution_time=time.monotonic() - child.started,
-                )
-                if _maxfail_tripped(session):
-                    tripped = True
+                else:
+                    assert isinstance(action, Reap)
+                    del running[action.name]
+                    result = child.finish()
+                    _process_group_result(
+                        config=config,
+                        ctx=ctx,
+                        group_name=child.name,
+                        group_items=groups[child.name],
+                        spec=child.spec,
+                        result=result,
+                        group_timeout=(
+                            group_timeouts.get(child.name) or default_timeout
+                        ),
+                        execution_time=time.monotonic() - child.started,
+                    )
+                    if _maxfail_tripped(session):
+                        tripped = True
 
             if tripped and not running:
                 # Drain complete (xdist exitfirst semantics): pending Groups

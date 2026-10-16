@@ -1,14 +1,19 @@
-"""Unit tests for the Group Pool seams (spec issue #70).
+"""Unit tests for the Group Pool seams.
 
-Three pure/direct seams, following the repo's pattern of testing deep
+Four pure/direct seams, following the repo's pattern of testing deep
 interfaces with plain values (see tests/test_launch_plan.py,
 tests/test_child_args.py):
 
 - decide_admissions: the whole scheduling policy as a table-driven function,
   no Children spawned;
+- decide_sweeps: the whole timeout/terminate-grace/reap policy as a table of
+  plain values, no processes and no sleeps;
 - resolve_numprocesses: the parallelism knob, with affinity monkeypatched;
 - RunningChild kill lifecycle: real short-lived processes, asserted via
   poll() and drained buffers (Ctrl-C is not expressible through pytester).
+
+Specs: https://github.com/dyollb/pytest-isolated/issues/70 and
+https://github.com/dyollb/pytest-isolated/issues/72.
 """
 
 from __future__ import annotations
@@ -27,9 +32,14 @@ from pytest_isolated.config import resolve_numprocesses
 from pytest_isolated.launch import LaunchSpec
 from pytest_isolated.pool import (
     _KILL_GRACE_SECONDS,
+    ChildState,
+    EscalateToKill,
+    Reap,
     RunningChild,
+    TerminateForTimeout,
     _PipeBuffer,
     decide_admissions,
+    decide_sweeps,
 )
 
 
@@ -149,6 +159,86 @@ class TestDecideAdmissions:
             maxfail_tripped=False,
         )
         assert admitted == ["first"]
+
+
+def _state(
+    name: str = "g",
+    *,
+    alive: bool = True,
+    deadline: float = 100.0,
+    kill_requested: float | None = None,
+) -> ChildState:
+    """One plain-value sweep snapshot, fixed clock base for table rows."""
+    return ChildState(
+        name=name, alive=alive, deadline=deadline, kill_requested=kill_requested
+    )
+
+
+class TestDecideSweeps:
+    """The sweep policy: deadline, terminate->kill grace, reap.
+
+    Plain values in, plain values out; the clock arrives as a parameter.
+    One row per policy claim, in the style of TestDecideAdmissions.
+
+    Spec: https://github.com/dyollb/pytest-isolated/issues/72
+    """
+
+    def test_alive_before_deadline_no_actions(self) -> None:
+        assert decide_sweeps([_state(deadline=100.0)], now=99.0) == []
+
+    def test_deadline_passed_marks_timeout_and_terminates(self) -> None:
+        # Deadline boundary is inclusive, matching the Child's own check.
+        assert decide_sweeps([_state(deadline=100.0)], now=100.0) == [
+            TerminateForTimeout("g")
+        ]
+
+    def test_terminate_requested_once_grace_running_waits(self) -> None:
+        # Terminate is emitted once, not every tick; while the grace runs,
+        # the decision waits and the Child is not reaped.
+        waited = _state(deadline=100.0, kill_requested=100.0)
+        assert decide_sweeps([waited], now=104.9, grace=5.0) == []
+
+    def test_grace_expired_escalates_to_kill(self) -> None:
+        # Grace boundary inclusive, matching the mechanics' >= comparison.
+        waited = _state(deadline=100.0, kill_requested=100.0)
+        assert decide_sweeps([waited], now=105.0, grace=5.0) == [EscalateToKill("g")]
+
+    def test_dead_child_reaped_only(self) -> None:
+        # Liveness alone decides the reap; the passed deadline changes nothing.
+        dead = _state(alive=False, deadline=100.0)
+        assert decide_sweeps([dead], now=500.0) == [Reap("g")]
+
+    def test_dead_mid_grace_reaped_not_escalated(self) -> None:
+        # Exited during its grace: reaped, carrying the timeout marking the
+        # TerminateForTimeout action already applied when it was requested.
+        dead = _state(alive=False, deadline=100.0, kill_requested=100.0)
+        assert decide_sweeps([dead], now=102.0, grace=5.0) == [Reap("g")]
+
+    def test_dead_overrun_by_microseconds_reaped_not_timed_out(self) -> None:
+        # Exit is decided from the poll fact, never from the clock crossing:
+        # a Child dead at 100.000001 with a 100.0 deadline reaps as passed.
+        dead = _state(alive=False, deadline=100.0)
+        assert decide_sweeps([dead], now=100.000_001) == [Reap("g")]
+
+    def test_reaps_come_back_in_running_order(self) -> None:
+        states = [_state("a", alive=False), _state("b", alive=False)]
+        assert decide_sweeps(states, now=500.0) == [Reap("a"), Reap("b")]
+
+    def test_siblings_never_suppress_each_others_actions(self) -> None:
+        # The contract behind
+        # https://github.com/dyollb/pytest-isolated/commit/1d45d24, as a table
+        # row: one stubborn Child sitting in its terminate grace (no action
+        # this tick) never hides the sibling that overran its own deadline,
+        # nor delays the dead Child's reap.
+        states = [
+            _state("stubborn", deadline=100.0, kill_requested=101.0),
+            _state("sibling", deadline=102.0),
+            _state("done", alive=False),
+        ]
+        assert decide_sweeps(states, now=103.0, grace=5.0) == [
+            TerminateForTimeout("sibling"),
+            Reap("done"),
+        ]
 
 
 class TestResolveNumprocesses:
