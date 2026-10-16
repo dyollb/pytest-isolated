@@ -9,6 +9,7 @@ timestamp files for exclusivity. Nothing here inspects plugin internals.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import textwrap
 import time
@@ -185,14 +186,13 @@ class TestTimeoutIsolation:
         assert _reported_timed_out(stdout, "test_stubborn")
         assert _reported_timed_out(stdout, "test_overruns_own_deadline")
 
+
 class TestDrainIsolation:
     @pytest.mark.skipif(
         sys.platform == "win32",
         reason="needs a POSIX grandchild inheriting the Child's pipe fds",
     )
-    def test_drain_freeze_cannot_misreport_a_sibling(
-        self, pytester: Pytester
-    ) -> None:
+    def test_drain_freeze_cannot_misreport_a_sibling(self, pytester: Pytester) -> None:
         """A finished Child whose pipes a grandchild holds open must not be
         able to freeze the sweep mid-finish() and have a sibling that
         overran its deadline reaped as passed.
@@ -228,6 +228,101 @@ class TestDrainIsolation:
         # be confused with it.
         result.assert_outcomes(passed=1, failed=1)
         assert _reported_timed_out(result.stdout.str(), "test_overruns_during_freeze")
+
+
+class TestKeyboardInterruptPool:
+    """Ctrl-C handling for the Group Pool: every live Child dies, Groups
+    that already finished keep their verdicts, interrupted Groups get an
+    interruption failure, and pending Groups stay silent.
+
+    The interrupt is raised at the pure sweep seam from the Parent's
+    conftest: pytester's in-process runner does not wrap the session, so
+    only a real run carries the interrupted exit path. Children are
+    separate processes and never call this seam (only the pool loop
+    does), so the conftest is inert there.
+    """
+
+    _INTERRUPT_CONFTEST = """
+        import pytest_isolated.execution as _execution
+        from pytest_isolated.pool import Reap as _Reap
+
+        _real_decide = _execution.decide_sweeps
+        _seen = {"reaped": False}
+
+        def _decide_then_interrupt(states, now, grace=5.0):
+            actions = _real_decide(states, now, grace)
+            if _seen["reaped"] and any(st.alive for st in states):
+                raise KeyboardInterrupt
+            if any(isinstance(a, _Reap) for a in actions):
+                _seen["reaped"] = True
+            return actions
+
+        _execution.decide_sweeps = _decide_then_interrupt
+        """
+
+    def _interrupt_after_first_reap(self, pytester: Pytester) -> None:
+        pytester.makeconftest(textwrap.dedent(self._INTERRUPT_CONFTEST))
+
+    def _three_groups(self, pytester: Pytester, pidfile: Path) -> None:
+        pytester.makepyfile(
+            test_a_fast=(
+                "import pytest\n"
+                "pytestmark = pytest.mark.isolated\n"
+                "def test_fast():\n    assert True\n"
+            ),
+            test_b_slow=(
+                "import os, pytest, time\n"
+                "from pathlib import Path\n"
+                "pytestmark = pytest.mark.isolated\n"
+                "def test_slow():\n"
+                f"    Path({str(pidfile)!r}).write_text(str(os.getpid()))\n"
+                "    time.sleep(120)\n"
+            ),
+            test_c_pending=(
+                "import pytest, time\n"
+                "pytestmark = pytest.mark.isolated(serial=True)\n"
+                "def test_pending():\n    time.sleep(120)\n"
+            ),
+        )
+
+    def test_interrupt_kills_live_children_and_keeps_finished_reports(
+        self, pytester: Pytester
+    ) -> None:
+        pidfile = pytester.path / "slow_pid.txt"
+        self._three_groups(pytester, pidfile)
+        self._interrupt_after_first_reap(pytester)
+
+        result = pytester.runpytest_subprocess("-q", "--isolated-numprocesses=2")
+
+        assert result.ret == 2  # pytest's interrupted exit path
+        # The completed Group kept its verdict; the live one is interrupted.
+        result.assert_outcomes(passed=1, failed=1)
+        out = result.stdout.str()
+        assert "was interrupted" in out
+        # The serial Group was never admitted (b held the pool busy-ish and
+        # it must not run beside anything): it reports nothing at all.
+        assert "test_pending" not in out
+        if sys.platform != "win32":
+            pid = int(pidfile.read_text())
+            with pytest.raises(ProcessLookupError):
+                os.kill(pid, 0)  # the live Child was killed, not orphaned
+
+    def test_interrupt_with_one_slot_reports_interrupted_group(
+        self, pytester: Pytester
+    ) -> None:
+        pidfile = pytester.path / "slow_pid.txt"
+        self._three_groups(pytester, pidfile)
+        self._interrupt_after_first_reap(pytester)
+
+        # Serial mode degenerates through the same loop: one slot.
+        result = pytester.runpytest_subprocess("-q")
+
+        assert result.ret == 2
+        result.assert_outcomes(passed=1, failed=1)
+        out = result.stdout.str()
+        assert "was interrupted" in out
+        # Only B was ever admitted after A; C never launched either way.
+        assert "test_pending" not in out
 
 
 class TestSerialExclusivity:
