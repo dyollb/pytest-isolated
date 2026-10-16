@@ -636,7 +636,7 @@ def _run_group_pool(
                     del finalizing[name]
                     _collect_and_emit(finishing, drain_timeout=0.0)
 
-            # Sweep tick: snapshot the Children's plain facts, ask the pure
+            # Sweep: snapshot the Children's plain facts, ask the pure
             # policy what each one gets, apply it. Reaps report on this
             # thread, in running order (completion-order emission).
             for action in decide_sweeps(

@@ -3,10 +3,10 @@
 When ``--isolated-numprocesses`` is above 1 the Parent keeps up to N Child
 processes alive at once instead of exactly one. This module owns three things:
 
-- the pure admission decision (which Groups may launch this tick), so the
+- the pure admission decision (which Groups may launch this sweep), so the
   scheduling rules -- slot accounting, Exclusive (serial) gating, the maxfail
   launch-gate, collection order -- are testable without spawning anything;
-- the pure sweep decision (what happens to each live Child this tick), so the
+- the pure sweep decision (what happens to each live Child this sweep), so the
   timeout/terminate-grace/reap policy -- the run's timeout contract -- is
   testable as a table of plain values on every platform. Spec:
   https://github.com/dyollb/pytest-isolated/issues/72
@@ -64,7 +64,7 @@ class SubprocessResult(NamedTuple):
 class ChildState(NamedTuple):
     """One Child's plain-value snapshot for the sweep decision.
 
-    ``alive`` comes from one ``poll()`` per live Child per tick; ``deadline``
+    ``alive`` comes from one ``poll()`` per live Child per sweep; ``deadline``
     and ``kill_requested`` are the Child's own monotonic clock fields (set
     when the Child was launched, and when a terminate was requested).
     """
@@ -101,7 +101,7 @@ def decide_sweeps(
     now: float,
     grace: float = _KILL_GRACE_SECONDS,
 ) -> list[SweepAction]:
-    """Return this tick's actions for every Child, in running order.
+    """Return this sweep's actions for every Child, in running order.
 
     Pure policy (spec: https://github.com/dyollb/pytest-isolated/issues/72):
     plain values in, decided actions out -- no process, no clock, no
@@ -109,7 +109,7 @@ def decide_sweeps(
     adapters. One Child's state never suppresses another's action: a sibling
     sitting in its terminate grace cannot stall anyone else's deadline check
     (the bug fixed by https://github.com/dyollb/pytest-isolated/commit/1d45d24).
-    Reaps appear in running order so same-tick emission order stays stable.
+    Reaps appear in running order so same-sweep emission order stays stable.
     """
     actions: list[SweepAction] = []
     for st in states:
@@ -140,7 +140,7 @@ def decide_admissions(
        already-running Exclusive Child (exclusive_running).
     2. Slot accounting: at most ``max_parallel - running_count`` launches.
     3. Exclusive (serial) Groups: a serial Group is admitted only when the
-       Pool is otherwise idle, and it launches alone this tick. A serial
+       Pool is otherwise idle, and it launches alone this sweep. A serial
        Group blocks the queue behind it (FIFO), so it can never starve while
        regular Groups keep cutting in.
     """
@@ -260,7 +260,7 @@ class RunningChild:
     def sweep_state(self) -> ChildState:
         """Plain-value snapshot of this Child for ``decide_sweeps``.
 
-        One ``poll()`` per tick; the clock fields stay owned by the Child.
+        One ``poll()`` per sweep; the clock fields stay owned by the Child.
         """
         return ChildState(
             name=self.name,
@@ -285,8 +285,8 @@ class RunningChild:
     def escalate_kill(self) -> None:
         """Hard-kill a Child whose request_kill() grace period has expired.
 
-        Never waits; call every sweep tick. The Child stays in the running
-        set until it is actually reaped, so the grace can end at any tick.
+        Never waits; call every sweep. The Child stays in the running
+        set until it is actually reaped, so the grace can end at any sweep.
         """
         if self.kill_requested is None or self.proc.poll() is not None:
             return
@@ -313,7 +313,7 @@ class RunningChild:
     def drain_done(self) -> bool:
         """True when both reader threads have hit EOF: nothing left to drain.
 
-        Cheap (no locks, no waits), safe to call every sweep tick. A Child
+        Cheap (no locks, no waits), safe to call every sweep. A Child
         whose pipes a grandchild inherited never reports done until the
         grandchild exits; the pool caps how long it waits for that.
         """

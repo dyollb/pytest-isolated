@@ -195,7 +195,7 @@ class TestDecideSweeps:
         ]
 
     def test_terminate_requested_once_grace_running_waits(self) -> None:
-        # Terminate is emitted once, not every tick; while the grace runs,
+        # Terminate is emitted once, not every sweep; while the grace runs,
         # the decision waits and the Child is not reaped.
         waited = _state(deadline=100.0, kill_requested=100.0)
         assert decide_sweeps([waited], now=104.9, grace=5.0) == []
@@ -230,7 +230,7 @@ class TestDecideSweeps:
         # The contract behind
         # https://github.com/dyollb/pytest-isolated/commit/1d45d24, as a table
         # row: one stubborn Child sitting in its terminate grace (no action
-        # this tick) never hides the sibling that overran its own deadline,
+        # this sweep) never hides the sibling that overran its own deadline,
         # nor delays the dead Child's reap.
         states = [
             _state("stubborn", deadline=100.0, kill_requested=101.0),
