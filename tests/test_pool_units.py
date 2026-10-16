@@ -19,6 +19,7 @@ https://github.com/dyollb/pytest-isolated/issues/72.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -28,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from pytest_isolated import execution
+from pytest_isolated import pool as pool_module
 from pytest_isolated.config import resolve_numprocesses
 from pytest_isolated.launch import LaunchSpec
 from pytest_isolated.pool import (
@@ -464,6 +466,63 @@ class TestPipeBufferIncremental:
 class _FakeItem:
     def __init__(self, nodeid: str) -> None:
         self.nodeid = nodeid
+
+
+class TestConstructorFailureSafety:
+    """Post-spawn init failure must not orphan a Child the pool never got."""
+
+    @staticmethod
+    def _spawn_guard(monkeypatch: pytest.MonkeyPatch) -> list[subprocess.Popen[bytes]]:
+        spawned: list[subprocess.Popen[bytes]] = []
+        real_popen = subprocess.Popen
+
+        def spy_popen(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            proc = real_popen(cmd, **kwargs)
+            spawned.append(proc)
+            return proc
+
+        monkeypatch.setattr(pool_module.subprocess, "Popen", spy_popen)
+        return spawned
+
+    @staticmethod
+    def _fail_second_thread_start(
+        monkeypatch: pytest.MonkeyPatch, exc: BaseException
+    ) -> None:
+        real_start = threading.Thread.start
+        seen = {"n": 0}
+
+        def flaky_start(self: threading.Thread) -> None:
+            seen["n"] += 1
+            if seen["n"] >= 2:
+                raise exc
+            real_start(self)
+
+        monkeypatch.setattr(threading.Thread, "start", flaky_start)
+
+    def test_reader_start_failure_reaps_the_spawned_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # e.g. RuntimeError("can't start new thread") under thread pressure:
+        # the process exists, the constructor does not return -- only the
+        # constructor can reap it.
+        spawned = self._spawn_guard(monkeypatch)
+        self._fail_second_thread_start(
+            monkeypatch, RuntimeError("can't start new thread")
+        )
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            RunningChild("g", _spec_for("import time; time.sleep(60)"), timeout=30)
+        assert len(spawned) == 1
+        assert spawned[0].wait(timeout=10) is not None
+
+    def test_interrupt_during_reader_start_reaps_the_spawned_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spawned = self._spawn_guard(monkeypatch)
+        self._fail_second_thread_start(monkeypatch, KeyboardInterrupt())
+        with pytest.raises(KeyboardInterrupt):
+            RunningChild("g", _spec_for("import time; time.sleep(60)"), timeout=30)
+        assert len(spawned) == 1
+        assert spawned[0].wait(timeout=10) is not None
 
 
 class TestPoolErrorCleanup:

@@ -233,8 +233,26 @@ class RunningChild:
             args=(self.proc.stderr,),
             daemon=True,
         )
-        self._out_thread.start()
-        self._err_thread.start()
+        try:
+            self._out_thread.start()
+            self._err_thread.start()
+        except BaseException:
+            # The process is spawned but this Child was never constructed,
+            # so the pool cannot reap what it never received: reap here or
+            # the Child outlives the run. Hard kill straight away (first
+            # call, no poll/grace dance to be re-interrupted before the
+            # signal lands; a Child that never reported to the pool has no
+            # graceful exit worth waiting for) and bound the wait. The
+            # started reader sees EOF once the process dies. Cleanup errors
+            # never mask the caller's exception.
+            with contextlib.suppress(Exception):
+                self.proc.kill()
+            with contextlib.suppress(Exception):
+                self.proc.wait(timeout=_KILL_GRACE_SECONDS)
+            for thread in (self._out_thread, self._err_thread):
+                if thread.is_alive():
+                    thread.join(timeout=_DRAIN_JOIN_TIMEOUT_SECONDS)
+            raise
 
     def is_alive(self) -> bool:
         return self.proc.poll() is None
