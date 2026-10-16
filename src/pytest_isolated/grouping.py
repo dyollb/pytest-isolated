@@ -41,6 +41,7 @@ from typing import Any
 import pytest
 
 from .config import (
+    CONFIG_ATTR_GROUP_SERIAL,
     CONFIG_ATTR_GROUP_TIMEOUTS,
     CONFIG_ATTR_GROUPS,
     SUBPROC_ENV,
@@ -89,6 +90,9 @@ def pytest_collection_modifyitems(
 
     groups: OrderedDict[str, list[pytest.Item]] = OrderedDict()
     group_timeouts: dict[str, int | None] = {}  # Track timeout per group
+    # serial=True is OR-propagated across every member marker: one serial
+    # member makes the whole Group Exclusive (spec issue #70).
+    group_serial: dict[str, bool] = {}
 
     for item in items:
         m = item.get_closest_marker("isolated")
@@ -138,7 +142,19 @@ def pytest_collection_modifyitems(
             timeout = m.kwargs.get("timeout") if m else None
             group_timeouts[group_key] = timeout
 
+        # Any isolated marker anywhere on the item may carry serial=True
+        # (closest-marker precedence governs group/timeout, not serial).
+        group_serial[group_key] = group_serial.get(group_key, False) or any(
+            bool(mm.kwargs.get("serial", False))
+            for mm in item.iter_markers(name="isolated")
+        )
+
         groups.setdefault(group_key, []).append(item)
 
     setattr(config, CONFIG_ATTR_GROUPS, groups)
     setattr(config, CONFIG_ATTR_GROUP_TIMEOUTS, group_timeouts)
+    setattr(
+        config,
+        CONFIG_ATTR_GROUP_SERIAL,
+        {name for name, is_serial in group_serial.items() if is_serial},
+    )

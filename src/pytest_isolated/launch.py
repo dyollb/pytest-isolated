@@ -1,17 +1,21 @@
-"""The child launch seam: everything an isolated child subprocess is told.
+"""The child launch seam: everything an isolated Child is told.
 
 ``plan_launch`` is the single place the child's interface is assembled --
-command line, environment, working directory, and the file handle it writes
-results to. The run loop plans, runs, and consumes; it never touches option
-forwarding, capture policy, env construction, temp-file creation, or cwd
-derivation.
+command line (including the hardened plan's per-Group basetemp and cache
+dir), environment, working directory, and the file handle it writes results
+to. The run loop plans, runs, and consumes; it never touches option
+forwarding, capture policy, env construction, temp-file creation, cwd
+derivation, or slot-to-directory naming.
 
 Ownership boundary: ``forwarding.child_args`` remains the sole owner of option
 policy (what is forwarded/blocked/parent-handled); this module owns argv
-packaging around it, plus env, cwd, and the report channel. The child timeout
-is a parent-side run parameter, deliberately not part of ``LaunchSpec``.
+packaging around it, plus env, cwd, the report channel, and the whole of
+parallel hardening (``open_group_temp_root`` opens the pool's temp tree,
+``Hardened`` names its per-slot directories). The child timeout is a
+parent-side run parameter, deliberately not part of ``LaunchSpec``.
 
-Spec: issue #65.
+Specs: https://github.com/dyollb/pytest-isolated/issues/65 and
+https://github.com/dyollb/pytest-isolated/issues/73.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+from pathlib import Path
 from typing import Final, NamedTuple
 
 import pytest
@@ -42,8 +47,80 @@ class LaunchSpec(NamedTuple):
     report_path: str
 
 
-def plan_launch(config: pytest.Config, nodeids: list[str]) -> LaunchSpec:
-    """Plan an isolated child launch for one group. Pure: no subprocess spawn."""
+class GroupTempRoot(NamedTuple):
+    """The pool's per-Group temp tree: the root plus its cleanup obligation.
+
+    ``temp_dir`` is non-None only when no path factory owns the tree (see
+    ``open_group_temp_root``); the pool cleans it up at exit, after every
+    Child has been killed and reaped.
+    """
+
+    root: Path
+    temp_dir: tempfile.TemporaryDirectory[str] | None
+
+
+class Hardened(NamedTuple):
+    """Inputs of a hardened plan: the pool's temp root, and one Group's slot.
+
+    Slot-to-directory naming (``group-N`` basetemp, ``cache-N`` cache) is
+    private to this module; its only interface is the argv it produces.
+    """
+
+    root: Path
+    slot: int
+
+
+def open_group_temp_root(config: pytest.Config) -> GroupTempRoot:
+    """Open the per-Group temp root for a concurrent pool.
+
+    Spec: https://github.com/dyollb/pytest-isolated/issues/70
+
+    Concurrent Children must not share pytest's basetemp counter. The tree
+    lives inside the Parent's resolved basetemp (artifacts stay together and
+    pytest's retention rules apply); with the tmpdir plugin disabled there is
+    no factory, so a plugin-owned temp dir cleaned at pool exit is used.
+
+    Resolution goes through the Parent's TempPathFactory on purpose: for a
+    user-given --basetemp, pytest's factory rm_rf's that directory lazily at
+    the first in-process tmp_path. Resolving here performs the wipe before
+    any Child writes and caches the result, so the later lazy call can never
+    delete finished Children's artifacts from under us.
+    """
+    factory = getattr(config, "_tmp_path_factory", None)
+    if factory is not None:
+        root = Path(factory.getbasetemp()) / "isolated-groups"
+        root.mkdir(parents=True, exist_ok=True)
+        return GroupTempRoot(root=root, temp_dir=None)
+    # tmpdir plugin disabled (e.g. -p no:tmpdir): no factory to resolve
+    # through, and the option may still be set — own our cleanup instead.
+    tmp = tempfile.TemporaryDirectory(prefix="pytest-isolated-basetemp-")
+    return GroupTempRoot(root=Path(tmp.name), temp_dir=tmp)
+
+
+def plan_launch(
+    config: pytest.Config,
+    nodeids: list[str],
+    *,
+    hardened: Hardened | None = None,
+) -> LaunchSpec:
+    """Plan an isolated child launch for one group. Pure: no subprocess spawn.
+
+    The hardened form (spec: https://github.com/dyollb/pytest-isolated/issues/73)
+    is used only by the concurrent pool: slot N of the pool's temp root gets a
+    unique ``group-N`` basetemp and a unique ``cache-N`` cache dir, so
+    concurrent Children cannot race on pytest's shared basetemp counter or one
+    ``.pytest_cache``. The cache is redirected via the ``cache_dir`` ini
+    (``-o``, portable since pytest 7) rather than ``-p no:cacheprovider``:
+    disabling the plugin also unregisters ``--lf``/``--ff``, so those options
+    inherited through ``PYTEST_ADDOPTS`` or ini ``addopts`` crashed the Child's
+    argument parsing. With the plugin alive and a fresh per-Group cache, they
+    parse and behave as they do in serial runs -- except under the inherited
+    ``--lfnf=none`` empty-cache policy, which would deselect the Parent's own
+    selection against a fresh cache; there the Child also gets ``--lfnf all``
+    (see below). All tokens are appended AFTER the forwarded args so an
+    inherited ``--basetemp``/``-o``/``--lfnf`` cannot override them. Serial
+    launches pass no ``hardened`` and get the pre-parallel command unchanged.
+    """
     capture_mode = config.getoption("capture", "fd")
 
     # Partial-output invariant: -u (in the base command) forces unbuffered
@@ -62,6 +139,22 @@ def plan_launch(config: pytest.Config, nodeids: list[str]) -> LaunchSpec:
         cmd.append("--capture=tee-sys")
     # Child args and the single --rootdir come from the forwarding interface.
     cmd.extend(child_args(config))
+    # Parallel hardening, injected last so they win over forwarded duplicates.
+    if hardened is not None:
+        hardened_args = ["-o", f"cache_dir={hardened.root / f'cache-{hardened.slot}'}"]
+        if config.getoption("last_failed_no_failures", None) == "none":
+            # The per-Group cache starts empty, so an inherited --lf under
+            # the 'none' empty-cache policy would deselect every nodeid the
+            # Parent just selected from its own cache: the Child would run
+            # nothing, exit 5, and be misread as a collection crash. 'all'
+            # (later wins over the inherited addopts) makes the empty cache
+            # run exactly the Parent's selection. Gated on the Parent
+            # actually carrying 'none': that proves this pytest registers
+            # --lfnf at all (7.4+, the floor here is 7.0) and that
+            # cacheprovider -- which owns both options -- is enabled.
+            hardened_args += ["--lfnf", "all"]
+        hardened_args += ["--basetemp", str(hardened.root / f"group-{hardened.slot}")]
+        cmd.extend(hardened_args)
     # The parent-resolved nodeids are the child's positional selectors.
     cmd.extend(nodeids)
 

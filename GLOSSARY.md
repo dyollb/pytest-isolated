@@ -37,9 +37,11 @@ is told.
 
 **Launch plan**:
 The complete description of what one Child is told: its command line (with the
-root directory stated exactly once), environment, working directory (derived
-exactly once, a separate fact from the stated one — the two can never
-disagree), and Report channel. Fresh plan per Group.
+root directory stated exactly once, and — when the Group runs in a Group Pool
+— a private basetemp and cache dir named after the Group's slot in the Pool),
+environment, working directory (derived exactly once, a separate fact from the
+stated one — the two can never disagree), and Report channel. Fresh plan per
+Group.
 _Avoid_: launch command, spawn setup
 
 **Report channel**:
@@ -55,8 +57,39 @@ _Avoid_: recursion guard (it is what makes a Child a Child, not just a guard)
 **Partial-output invariant**:
 Every Child runs with unbuffered output duplicated to the Parent's view, so a
 timeout or crash still yields everything printed so far. The one carve-out: a
-Parent run with capture disabled keeps the Child's capture disabled too.
+Parent run with capture disabled (`-s`) gives the Child the shared terminal
+directly — output is live and interleaved, and nothing is attached afterward.
 _Avoid_: tee-sys hack
+
+### Parallel running
+
+**Group Pool**:
+The Parent's set of concurrently running Children, capped by the process count
+(`--isolated-numprocesses`); pending Groups queue in collection order as slots
+free. Each Group's captured output reaches the Parent's terminal as one block
+when its Child finishes (completion order); reported results keep collection
+order.
+_Avoid_: worker pool (there are no workers — each Child runs one whole Group),
+burst-on-completion (a property of the Pool, not its own thing)
+
+**Sweep**:
+One round of the Group Pool's running cycle: Snapshot each live Child's plain
+facts (liveness from one poll, its deadline, when a terminate was requested),
+Decide what each Child gets (terminate-for-timeout, escalate-to-kill, reap),
+Apply the decisions through the Child's mechanics, and Reap finished Children
+in running order. The timeout contract lives in the Decide step, not the loop.
+_Avoid_: Sweep Tick, tick (jargon; the round is a sweep, as in `decide_sweeps`),
+polling loop, housekeeping (the four stages are the term, not a
+mechanism description)
+
+**Exclusive Group**:
+A Group marked `serial=True`, which runs alone: admitted only while no other
+Child runs, and nothing launches while it does. It keeps its queue position, so
+it can never be starved.
+
+**Interrupted run**:
+The Parent's outcome when Ctrl-C stops a run: Children are killed and every test
+that never reached teardown is reported as a failure.
 
 ### Option policy
 

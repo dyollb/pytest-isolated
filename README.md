@@ -63,6 +63,7 @@ pytest  # Crash is isolated, suite continues
 
 - Run tests in fresh Python subprocesses to prevent state pollution
 - Group related tests to run together in the same subprocess
+- Run up to N Group subprocesses in parallel (`--isolated-numprocesses`)
 - Handles crashes, timeouts, and setup/teardown failures
 - Respects pytest's standard output capture settings (`-s`, `--capture`)
 - Works with pytest reporters (JUnit XML, etc.)
@@ -184,6 +185,7 @@ pytest --no-isolation --pdb
 ```ini
 [pytest]
 isolated_timeout = 300
+isolated_numprocesses = auto
 ```
 
 Or in `pyproject.toml`:
@@ -191,7 +193,50 @@ Or in `pyproject.toml`:
 ```toml
 [tool.pytest.ini_options]
 isolated_timeout = "300"
+isolated_numprocesses = "auto"
 ```
+
+### Parallel Execution
+
+By default each Isolated Group runs in its own subprocess, but only one subprocess
+runs at a time. To run Groups concurrently:
+
+```bash
+# Up to 8 Group subprocesses at once
+pytest --isolated --isolated-numprocesses=8
+
+# One per usable CPU (affinity-aware)
+pytest --isolated --isolated-numprocesses=auto
+```
+
+- The default (flag absent, `isolated_numprocesses` unset) is serial: results and
+  output are byte-identical to earlier releases.
+- Outcomes, durations, exit codes, and reporter files (JUnit XML etc.) are
+  unchanged by parallelism; only the wall clock moves. Group output arrives as one
+  burst when each Child finishes, so `-k`/report ordering is preserved while live
+  stdout may appear in completion order.
+- Groups that must not overlap anything get `@pytest.mark.isolated(serial=True)`:
+  the marker propagates to the whole Group, which then runs alone — nothing else
+  launches while it does — and keeps its place in collection order.
+- With `--isolated-numprocesses` > 1, each Child also gets its own `tmp_path`
+  root and its own fresh pytest cache directory (both under the run's
+  `--basetemp`, when given), so concurrent Children never race on shared state —
+  while `--lf`/`--ff` inherited via `PYTEST_ADDOPTS`/`addopts` keep working.
+- Caution: with `-s`/`--capture=no`, Children write straight to the Parent's
+  terminal (live, like plain pytest); under parallelism those streams interleave
+  and a one-time warning is issued. Test outcomes and reporters stay correct.
+
+#### Switching from pytest-xdist
+
+| pytest-xdist                       | pytest-isolated                                             |
+| ---------------------------------- | ----------------------------------------------------------- |
+| `-n 4`                             | `--isolated-numprocesses=4`                                 |
+| `@pytest.mark.xdist_group("name")` | `@pytest.mark.isolated(group="name")`                       |
+| `-n 4 -x` (drain)                  | same: in-flight Groups finish, unstarted ones do not launch |
+
+Unlike xdist, every Child is a complete fresh pytest process for one Group — no
+controller/worker protocol to break on Windows — at the cost of one pytest startup
+per Group rather than per worker.
 
 ## Real-World Use Cases
 
@@ -351,6 +396,12 @@ if os.environ.get("PYTEST_RUNNING_IN_SUBPROCESS") == "1":
 ## Troubleshooting
 
 **Tests timing out**: Increase timeout with `--isolated-timeout=600`
+
+**Interleaved output with `-s`**: With capture disabled, Children write straight to the
+Parent's terminal (as with plain pytest), so concurrent Children interleave when
+`--isolated-numprocesses` > 1. Nothing is captured for per-test reports in that mode —
+drop `-s` if you want output attached to failures, or drop to serial
+(`--isolated-numprocesses=1`) if you need strictly ordered live output.
 
 **Missing output**: Use `-s` or `--capture=no` to see output from passing tests, or `-v` for verbose output. pytest-isolated respects pytest's standard capture settings.
 

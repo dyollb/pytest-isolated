@@ -1,0 +1,571 @@
+"""Unit tests for the Group Pool seams.
+
+Four pure/direct seams, following the repo's pattern of testing deep
+interfaces with plain values (see tests/test_launch_plan.py,
+tests/test_child_args.py):
+
+- decide_admissions: the whole scheduling policy as a table-driven function,
+  no Children spawned;
+- decide_sweeps: the whole timeout/terminate-grace/reap policy as a table of
+  plain values, no processes and no sleeps;
+- resolve_numprocesses: the parallelism knob, with affinity monkeypatched;
+- RunningChild kill lifecycle: real short-lived processes, asserted via
+  poll() and drained buffers (Ctrl-C is not expressible through pytester).
+
+Specs: https://github.com/dyollb/pytest-isolated/issues/70 and
+https://github.com/dyollb/pytest-isolated/issues/72.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import threading
+import time
+from collections import OrderedDict
+from pathlib import Path
+
+import pytest
+
+from pytest_isolated import execution
+from pytest_isolated import pool as pool_module
+from pytest_isolated.config import resolve_numprocesses
+from pytest_isolated.launch import LaunchSpec
+from pytest_isolated.pool import (
+    _KILL_GRACE_SECONDS,
+    ChildState,
+    EscalateToKill,
+    Reap,
+    RunningChild,
+    TerminateForTimeout,
+    _PipeBuffer,
+    decide_admissions,
+    decide_sweeps,
+)
+
+
+class TestDecideAdmissions:
+    """The admission rules: slots, serial exclusivity, maxfail gate, order."""
+
+    def test_maxfail_gate_launches_nothing(self) -> None:
+        assert (
+            decide_admissions(
+                pending=["a", "b"],
+                running_count=0,
+                serial=frozenset(),
+                max_parallel=4,
+                maxfail_tripped=True,
+            )
+            == []
+        )
+
+    def test_respects_free_slots(self) -> None:
+        admitted = decide_admissions(
+            pending=["a", "b", "c", "d"],
+            running_count=1,
+            serial=frozenset(),
+            max_parallel=3,
+            maxfail_tripped=False,
+        )
+        assert admitted == ["a", "b"]  # 2 free slots, collection order
+
+    def test_no_slots_admits_nothing(self) -> None:
+        assert (
+            decide_admissions(
+                pending=["a"],
+                running_count=2,
+                serial=frozenset(),
+                max_parallel=2,
+                maxfail_tripped=False,
+            )
+            == []
+        )
+
+    def test_serial_head_admits_alone_when_idle(self) -> None:
+        admitted = decide_admissions(
+            pending=["solo", "a", "b"],
+            running_count=0,
+            serial=frozenset({"solo"}),
+            max_parallel=4,
+            maxfail_tripped=False,
+        )
+        assert admitted == ["solo"]  # exclusive: nothing joins it
+
+    def test_serial_head_blocks_queue_while_pool_busy(self) -> None:
+        # Regular groups behind the serial head must not cut in (no
+        # starvation); the pool drains down to the serial Group.
+        admitted = decide_admissions(
+            pending=["solo", "a", "b"],
+            running_count=1,
+            serial=frozenset({"solo"}),
+            max_parallel=4,
+            maxfail_tripped=False,
+        )
+        assert admitted == []
+
+    def test_serial_midqueue_blocks_and_regular_before_it_launch(self) -> None:
+        # Regular groups ahead of the serial head keep the pool busy while
+        # the serial Group waits for its natural collection-order slot.
+        admitted = decide_admissions(
+            pending=["a", "solo", "b"],
+            running_count=0,
+            serial=frozenset({"solo"}),
+            max_parallel=4,
+            maxfail_tripped=False,
+        )
+        assert admitted == ["a"]
+
+    def test_serial_only_pending_admits_when_drained(self) -> None:
+        admitted = decide_admissions(
+            pending=["solo"],
+            running_count=0,
+            serial=frozenset({"solo"}),
+            max_parallel=4,
+            maxfail_tripped=False,
+        )
+        assert admitted == ["solo"]
+
+    def test_collection_order_preserved(self) -> None:
+        admitted = decide_admissions(
+            pending=["z", "y", "x"],
+            running_count=0,
+            serial=frozenset(),
+            max_parallel=3,
+            maxfail_tripped=False,
+        )
+        assert admitted == ["z", "y", "x"]
+
+    def test_exclusive_running_blocks_everything(self) -> None:
+        # While a serial Child is alive, nothing else may launch even with
+        # free slots and regular Groups pending.
+        assert (
+            decide_admissions(
+                pending=["a", "b"],
+                running_count=1,
+                serial=frozenset({"solo"}),
+                max_parallel=4,
+                maxfail_tripped=False,
+                exclusive_running=True,
+            )
+            == []
+        )
+
+    def test_serial_degenerate_one_slot_serial_order(self) -> None:
+        # max_parallel=1 (serial mode): admits exactly the collection head.
+        admitted = decide_admissions(
+            pending=["first", "second"],
+            running_count=0,
+            serial=frozenset(),
+            max_parallel=1,
+            maxfail_tripped=False,
+        )
+        assert admitted == ["first"]
+
+
+def _state(
+    name: str = "g",
+    *,
+    alive: bool = True,
+    deadline: float = 100.0,
+    kill_requested: float | None = None,
+) -> ChildState:
+    """One plain-value sweep snapshot, fixed clock base for table rows."""
+    return ChildState(
+        name=name, alive=alive, deadline=deadline, kill_requested=kill_requested
+    )
+
+
+class TestDecideSweeps:
+    """The sweep policy: deadline, terminate->kill grace, reap.
+
+    Plain values in, plain values out; the clock arrives as a parameter.
+    One row per policy claim, in the style of TestDecideAdmissions.
+
+    Spec: https://github.com/dyollb/pytest-isolated/issues/72
+    """
+
+    def test_alive_before_deadline_no_actions(self) -> None:
+        assert decide_sweeps([_state(deadline=100.0)], now=99.0) == []
+
+    def test_deadline_passed_marks_timeout_and_terminates(self) -> None:
+        # Deadline boundary is inclusive, matching the Child's own check.
+        assert decide_sweeps([_state(deadline=100.0)], now=100.0) == [
+            TerminateForTimeout("g")
+        ]
+
+    def test_terminate_requested_once_grace_running_waits(self) -> None:
+        # Terminate is emitted once, not every sweep; while the grace runs,
+        # the decision waits and the Child is not reaped.
+        waited = _state(deadline=100.0, kill_requested=100.0)
+        assert decide_sweeps([waited], now=104.9, grace=5.0) == []
+
+    def test_grace_expired_escalates_to_kill(self) -> None:
+        # Grace boundary inclusive, matching the mechanics' >= comparison.
+        waited = _state(deadline=100.0, kill_requested=100.0)
+        assert decide_sweeps([waited], now=105.0, grace=5.0) == [EscalateToKill("g")]
+
+    def test_dead_child_reaped_only(self) -> None:
+        # Liveness alone decides the reap; the passed deadline changes nothing.
+        dead = _state(alive=False, deadline=100.0)
+        assert decide_sweeps([dead], now=500.0) == [Reap("g")]
+
+    def test_dead_mid_grace_reaped_not_escalated(self) -> None:
+        # Exited during its grace: reaped, carrying the timeout marking the
+        # TerminateForTimeout action already applied when it was requested.
+        dead = _state(alive=False, deadline=100.0, kill_requested=100.0)
+        assert decide_sweeps([dead], now=102.0, grace=5.0) == [Reap("g")]
+
+    def test_dead_overrun_by_microseconds_reaped_not_timed_out(self) -> None:
+        # Exit is decided from the poll fact, never from the clock crossing:
+        # a Child dead at 100.000001 with a 100.0 deadline reaps as passed.
+        dead = _state(alive=False, deadline=100.0)
+        assert decide_sweeps([dead], now=100.000_001) == [Reap("g")]
+
+    def test_reaps_come_back_in_running_order(self) -> None:
+        states = [_state("a", alive=False), _state("b", alive=False)]
+        assert decide_sweeps(states, now=500.0) == [Reap("a"), Reap("b")]
+
+    def test_siblings_never_suppress_each_others_actions(self) -> None:
+        # The contract behind
+        # https://github.com/dyollb/pytest-isolated/commit/1d45d24, as a table
+        # row: one stubborn Child sitting in its terminate grace (no action
+        # this sweep) never hides the sibling that overran its own deadline,
+        # nor delays the dead Child's reap.
+        states = [
+            _state("stubborn", deadline=100.0, kill_requested=101.0),
+            _state("sibling", deadline=102.0),
+            _state("done", alive=False),
+        ]
+        assert decide_sweeps(states, now=103.0, grace=5.0) == [
+            TerminateForTimeout("sibling"),
+            Reap("done"),
+        ]
+
+
+class TestResolveNumprocesses:
+    def test_unset_means_serial(self) -> None:
+        assert resolve_numprocesses(None) == 1
+        assert resolve_numprocesses("") == 1
+        assert resolve_numprocesses("  ") == 1
+
+    def test_integer(self) -> None:
+        assert resolve_numprocesses("8") == 8
+
+    def test_auto_uses_affinity_on_posix(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        if not hasattr(os, "sched_getaffinity"):  # pragma: no cover - Windows
+            pytest.skip("POSIX-only affinity path")
+        monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: {0, 1, 2, 3})
+        assert resolve_numprocesses("auto") == 4
+
+    def test_auto_falls_back_to_cpu_count(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        if hasattr(os, "sched_getaffinity"):
+            monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set())
+            monkeypatch.setattr(os, "cpu_count", lambda: 7)
+        else:  # pragma: no cover - Windows
+            monkeypatch.delattr(os, "process_cpu_count", raising=False)
+            monkeypatch.setattr(os, "cpu_count", lambda: 7)
+        assert resolve_numprocesses("auto") == 7
+
+    def test_auto_survives_process_cpu_count_returning_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Windows-shaped branch: no affinity source, process_cpu_count()
+        # answers None (undeterminable) -> must fall through to cpu_count.
+        monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+        monkeypatch.setattr(os, "process_cpu_count", lambda: None, raising=False)
+        monkeypatch.setattr(os, "cpu_count", lambda: 5)
+        assert resolve_numprocesses("auto") == 5
+
+    def test_auto_case_insensitive(self) -> None:
+        assert resolve_numprocesses("AUTO") == resolve_numprocesses("auto")
+
+    @pytest.mark.parametrize("bad", ["zero", "8.5", "-1", "0"])
+    def test_invalid_values_raise_usage_error_naming_value(self, bad: str) -> None:
+        with pytest.raises(pytest.UsageError) as excinfo:
+            resolve_numprocesses(bad)
+        assert repr(bad) in str(excinfo.value)
+
+
+def _spec_for(code: str) -> LaunchSpec:
+    """A LaunchSpec running inline Python in this interpreter."""
+    return LaunchSpec(
+        cmd=[sys.executable, "-u", "-c", code],
+        env=dict(os.environ),
+        cwd=str(Path.cwd()),
+        report_path="/dev/null",  # RunningChild never touches it
+    )
+
+
+class TestRunningChildLifecycle:
+    def test_finish_collects_exit_and_output(self) -> None:
+        child = RunningChild(
+            "g",
+            _spec_for("print('hello'); import sys; print('err', file=sys.stderr)"),
+            timeout=30,
+        )
+        while child.is_alive():
+            time.sleep(0.01)
+        result = child.finish()
+        assert result.returncode == 0
+        # On Windows, CPython text-mode stdout translates \n to \r\n when the
+        # pipe is not a console; compare platform-normalized output.
+        stdout = result.stdout.replace(b"\r\n", b"\n")
+        stderr = result.stderr.replace(b"\r\n", b"\n")
+        assert stdout == b"hello\n"
+        assert stderr == b"err\n"
+        assert result.timed_out is False
+
+    def test_kill_terminates_and_leaves_no_live_process(self) -> None:
+        child = RunningChild("g", _spec_for("import time; time.sleep(60)"), timeout=30)
+        assert child.is_alive()
+        child.kill()
+        assert child.proc.poll() is not None  # exited, no orphan
+        result = child.finish()
+        assert result.timed_out is False  # kill itself does not set the flag
+
+    def test_request_kill_returns_immediately_and_terminates(self) -> None:
+        child = RunningChild("g", _spec_for("import time; time.sleep(60)"), timeout=30)
+        try:
+            start = time.monotonic()
+            child.request_kill()
+            # Must not block for the grace period (unlike kill(), which
+            # costs >= 5s on a sleeper that never exits); 3s leaves room
+            # for a loaded CI runner without weakening the claim.
+            assert time.monotonic() - start < 3.0
+            deadline = time.monotonic() + 5
+            while child.is_alive() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert child.proc.poll() is not None
+        finally:
+            child.kill()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="needs an ignorable SIGTERM")
+    def test_escalate_kill_finishes_a_stubborn_child(self) -> None:
+        code = (
+            "import signal, sys, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "print('armed', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        child = RunningChild("g", _spec_for(code), timeout=30)
+        try:
+            # Only fight after the handler is installed: a still-starting
+            # interpreter takes SIGTERM like any process.
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not child._stdout.value():
+                time.sleep(0.01)
+            assert child._stdout.value(), "child never armed"
+            child.request_kill()
+            time.sleep(0.3)
+            assert child.is_alive()  # terminate() was ignored
+            child.escalate_kill()  # grace not expired: no-op, never waits
+            assert child.is_alive()
+            # Age the request past the grace without sleeping for it.
+            child.kill_requested -= _KILL_GRACE_SECONDS + 1
+            child.escalate_kill()
+            deadline = time.monotonic() + 5
+            while child.is_alive() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert child.proc.poll() is not None
+        finally:
+            child.kill()
+
+    def test_kill_on_exited_child_is_noop(self) -> None:
+        child = RunningChild("g", _spec_for("pass"), timeout=30)
+        while child.is_alive():
+            time.sleep(0.01)
+        child.kill()  # must not raise
+        assert child.finish().returncode == 0
+
+    def test_partial_output_survives_kill(self) -> None:
+        """The Partial-output invariant under Popen: killed Children keep
+        everything printed so far (unbuffered -u + drained pipes)."""
+        code = "import time; print('early output', flush=True); time.sleep(60)"
+        child = RunningChild("g", _spec_for(code), timeout=30)
+        # Give the Child time to print, then kill it mid-run.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if child._stdout.value():
+                break
+            time.sleep(0.01)
+        child.kill()
+        result = child.finish()
+        assert b"early output" in result.stdout.replace(b"\r\n", b"\n")
+
+    def test_drain_done_true_once_pipes_hit_eof(self) -> None:
+        child = RunningChild("g", _spec_for("print('hi')"), timeout=30)
+        while not child.drain_done():
+            time.sleep(0.01)  # bounded by the test-suite timeout
+        assert child.finish().stdout.replace(b"\r\n", b"\n") == b"hi\n"
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="needs a POSIX grandchild inheriting the Child's pipe fds",
+    )
+    def test_finish_zero_drain_timeout_never_waits_on_inherited_pipes(
+        self,
+    ) -> None:
+        # The Child exits but leaves a grandchild holding the inherited
+        # stdout write end: EOF (and the reader thread) land ~3s out. A
+        # drain_timeout of 0 must take the incrementally published snapshot
+        # instead of waiting for an EOF the grandchild controls.
+        code = (
+            "import subprocess, sys, time\n"
+            "subprocess.Popen([sys.executable, '-u', '-c', "
+            "'import time; time.sleep(3); print(chr(120))'])\n"
+            "print('child-done', flush=True)\n"
+            "time.sleep(0.2)\n"
+        )
+        child = RunningChild("g", _spec_for(code), timeout=30)
+        while child.is_alive():
+            time.sleep(0.01)
+        started = time.monotonic()
+        result = child.finish(drain_timeout=0.0)
+        assert time.monotonic() - started < 1.0
+        assert result.returncode == 0
+        assert not child.drain_done()  # reader still blocked on the grandchild
+        # Whatever the reader already published is intact: the Child's own
+        # line went through before it exited.
+        assert b"child-done" in result.stdout
+
+
+class TestPipeBufferIncremental:
+    def test_publishes_bytes_before_eof(self) -> None:
+        """consume() must make received bytes visible without waiting for EOF.
+
+        A grandchild keeping the write end open would otherwise starve the
+        read; the reader thread publishes each read1() chunk as it arrives.
+        """
+        read_fd, write_fd = os.pipe()
+        stream = os.fdopen(read_fd, "rb", buffering=-1)  # BufferedReader
+        buffer = _PipeBuffer()
+        thread = threading.Thread(target=buffer.consume, args=(stream,), daemon=True)
+        thread.start()
+        try:
+            os.write(write_fd, b"first chunk")
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not buffer.value():
+                time.sleep(0.01)
+            # Visible while the writer is still open (no EOF yet).
+            assert buffer.value() == b"first chunk"
+            os.write(write_fd, b" + second")
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and buffer.value() == b"first chunk":
+                time.sleep(0.01)
+            assert buffer.value() == b"first chunk + second"
+        finally:
+            os.close(write_fd)  # EOF lets the reader thread exit
+            thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert buffer.value() == b"first chunk + second"
+
+
+class _FakeItem:
+    def __init__(self, nodeid: str) -> None:
+        self.nodeid = nodeid
+
+
+class TestConstructorFailureSafety:
+    """Post-spawn init failure must not orphan a Child the pool never got."""
+
+    @staticmethod
+    def _spawn_guard(monkeypatch: pytest.MonkeyPatch) -> list[subprocess.Popen[bytes]]:
+        spawned: list[subprocess.Popen[bytes]] = []
+        real_popen = subprocess.Popen
+
+        def spy_popen(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            proc = real_popen(cmd, **kwargs)
+            spawned.append(proc)
+            return proc
+
+        monkeypatch.setattr(pool_module.subprocess, "Popen", spy_popen)
+        return spawned
+
+    @staticmethod
+    def _fail_second_thread_start(
+        monkeypatch: pytest.MonkeyPatch, exc: BaseException
+    ) -> None:
+        real_start = threading.Thread.start
+        seen = {"n": 0}
+
+        def flaky_start(self: threading.Thread) -> None:
+            seen["n"] += 1
+            if seen["n"] >= 2:
+                raise exc
+            real_start(self)
+
+        monkeypatch.setattr(threading.Thread, "start", flaky_start)
+
+    def test_reader_start_failure_reaps_the_spawned_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # e.g. RuntimeError("can't start new thread") under thread pressure:
+        # the process exists, the constructor does not return -- only the
+        # constructor can reap it.
+        spawned = self._spawn_guard(monkeypatch)
+        self._fail_second_thread_start(
+            monkeypatch, RuntimeError("can't start new thread")
+        )
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            RunningChild("g", _spec_for("import time; time.sleep(60)"), timeout=30)
+        assert len(spawned) == 1
+        assert spawned[0].wait(timeout=10) is not None
+
+    def test_interrupt_during_reader_start_reaps_the_spawned_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spawned = self._spawn_guard(monkeypatch)
+        self._fail_second_thread_start(monkeypatch, KeyboardInterrupt())
+        with pytest.raises(KeyboardInterrupt):
+            RunningChild("g", _spec_for("import time; time.sleep(60)"), timeout=30)
+        assert len(spawned) == 1
+        assert spawned[0].wait(timeout=10) is not None
+
+
+class TestPoolErrorCleanup:
+    def test_launch_failure_kills_running_children(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A spawn failure partway through a batch must not leave the already
+        # launched Child running (or orphaned past the pool's cleanup).
+        started: list[RunningChild] = []
+
+        def fake_launch_child(name, spec, *, timeout, capture=True):  # type: ignore[no-untyped-def]
+            child = RunningChild(name, spec, timeout=timeout, capture=capture)
+            started.append(child)
+            return child
+
+        launches = {"n": 0}
+
+        def fake_plan_launch(config, nodeids, **kwargs):  # type: ignore[no-untyped-def]
+            launches["n"] += 1
+            if launches["n"] > 1:
+                raise OSError("simulated spawn failure")
+            return _spec_for("import time; time.sleep(30)")
+
+        monkeypatch.setattr(execution, "launch_child", fake_launch_child)
+        monkeypatch.setattr(execution, "plan_launch", fake_plan_launch)
+
+        groups: OrderedDict[str, list[_FakeItem]] = OrderedDict(
+            g1=[_FakeItem("g1::test_a")],
+            g2=[_FakeItem("g2::test_a")],
+        )
+        with pytest.raises(OSError, match="simulated spawn failure"):
+            execution._run_group_pool(
+                session=None,  # type: ignore[arg-type]
+                config=None,  # type: ignore[arg-type]
+                ctx=execution.ExecutionContext(session=None),  # type: ignore[arg-type]
+                groups=groups,
+                group_timeouts={},
+                default_timeout=600,
+                serial_groups=frozenset(),
+                max_parallel=2,
+                capture_output=True,
+            )
+        assert started  # the first Child really launched
+        for child in started:
+            assert child.proc.wait(timeout=10) is not None
