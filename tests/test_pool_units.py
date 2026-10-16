@@ -393,6 +393,42 @@ class TestRunningChildLifecycle:
         result = child.finish()
         assert b"early output" in result.stdout.replace(b"\r\n", b"\n")
 
+    def test_drain_done_true_once_pipes_hit_eof(self) -> None:
+        child = RunningChild("g", _spec_for("print('hi')"), timeout=30)
+        while not child.drain_done():
+            time.sleep(0.01)  # bounded by the test-suite timeout
+        assert child.finish().stdout.replace(b"\r\n", b"\n") == b"hi\n"
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="needs a POSIX grandchild inheriting the Child's pipe fds",
+    )
+    def test_finish_zero_drain_timeout_never_waits_on_inherited_pipes(
+        self,
+    ) -> None:
+        # The Child exits but leaves a grandchild holding the inherited
+        # stdout write end: EOF (and the reader thread) land ~3s out. A
+        # drain_timeout of 0 must take the incrementally published snapshot
+        # instead of waiting for an EOF the grandchild controls.
+        code = (
+            "import subprocess, sys, time\n"
+            "subprocess.Popen([sys.executable, '-u', '-c', "
+            "'import time; time.sleep(3); print(chr(120))'])\n"
+            "print('child-done', flush=True)\n"
+            "time.sleep(0.2)\n"
+        )
+        child = RunningChild("g", _spec_for(code), timeout=30)
+        while child.is_alive():
+            time.sleep(0.01)
+        started = time.monotonic()
+        result = child.finish(drain_timeout=0.0)
+        assert time.monotonic() - started < 1.0
+        assert result.returncode == 0
+        assert not child.drain_done()  # reader still blocked on the grandchild
+        # Whatever the reader already published is intact: the Child's own
+        # line went through before it exited.
+        assert b"child-done" in result.stdout
+
 
 class TestPipeBufferIncremental:
     def test_publishes_bytes_before_eof(self) -> None:

@@ -36,6 +36,7 @@ from .pool import (
     TerminateForTimeout,
     decide_admissions,
     decide_sweeps,
+    drain_join_timeout,
     launch_child,
     poll_interval,
 )
@@ -564,13 +565,36 @@ def _run_group_pool(
     """
     pending = list(groups)
     running: OrderedDict[str, RunningChild] = OrderedDict()
+    # Exited Children still waiting for their pipes to drain before emission:
+    # a grandchild that inherited the Child's pipes can keep a reader blocked
+    # indefinitely, and joining it inside the sweep would freeze every
+    # sibling's deadline enforcement. Each entry is the Child plus the
+    # monotonic time it started finalizing.
+    finalizing: OrderedDict[str, tuple[RunningChild, float]] = OrderedDict()
     slot = 0
     tripped = False
     temp_root: GroupTempRoot | None = None
+
+    def _collect_and_emit(child: RunningChild, drain_timeout: float) -> None:
+        nonlocal tripped
+        result = child.finish(drain_timeout=drain_timeout)
+        _process_group_result(
+            config=config,
+            ctx=ctx,
+            group_name=child.name,
+            group_items=groups[child.name],
+            spec=child.spec,
+            result=result,
+            group_timeout=(group_timeouts.get(child.name) or default_timeout),
+            execution_time=time.monotonic() - child.started,
+        )
+        if _maxfail_tripped(session):
+            tripped = True
+
     if max_parallel > 1:
         temp_root = open_group_temp_root(config)
     try:
-        while pending or running:
+        while pending or running or finalizing:
             for name in decide_admissions(
                 pending=pending,
                 running_count=len(running),
@@ -600,6 +624,18 @@ def _run_group_pool(
                     name, spec, timeout=group_timeout, capture=capture_output
                 )
 
+            # Advance pending finalizations before sweeping so emission
+            # keeps completion order (an older completion reports first).
+            # Past the drain budget the Group reports with the output the
+            # readers already hold: one Child's stuck pipes never hold the
+            # loop -- or a sibling's deadline -- hostage.
+            now = time.monotonic()
+            for name in list(finalizing):
+                finishing, entered = finalizing[name]
+                if finishing.drain_done() or now - entered >= drain_join_timeout():
+                    del finalizing[name]
+                    _collect_and_emit(finishing, drain_timeout=0.0)
+
             # Sweep tick: snapshot the Children's plain facts, ask the pure
             # policy what each one gets, apply it. Reaps report on this
             # thread, in running order (completion-order emission).
@@ -620,29 +656,22 @@ def _run_group_pool(
                 else:
                     assert isinstance(action, Reap)
                     del running[action.name]
-                    result = child.finish()
-                    _process_group_result(
-                        config=config,
-                        ctx=ctx,
-                        group_name=child.name,
-                        group_items=groups[child.name],
-                        spec=child.spec,
-                        result=result,
-                        group_timeout=(
-                            group_timeouts.get(child.name) or default_timeout
-                        ),
-                        execution_time=time.monotonic() - child.started,
-                    )
-                    if _maxfail_tripped(session):
-                        tripped = True
+                    if child.drain_done():
+                        # Healthy path: the pipes hit EOF the moment the
+                        # Child exited, so its output is already complete.
+                        _collect_and_emit(child, drain_timeout=0.0)
+                    else:
+                        # A descendant holds the pipes open: finalize off the
+                        # sweep path instead of joining here.
+                        finalizing[child.name] = (child, time.monotonic())
 
-            if tripped and not running:
+            if tripped and not running and not finalizing:
                 # Drain complete (xdist exitfirst semantics): pending Groups
                 # deliberately never launch; without this the loop would spin
                 # with nothing left to admit or reap.
                 break
 
-            if pending or running:
+            if pending or running or finalizing:
                 time.sleep(poll_interval())
     except KeyboardInterrupt:
         for child in running.values():
@@ -651,6 +680,12 @@ def _run_group_pool(
             _emit_interrupted(
                 ctx, child.name, groups[child.name], child.spec, child.finish()
             )
+        # Children that completed before the interrupt keep their verdict:
+        # only the pipe drain was outstanding, and partial output beats
+        # rewriting a finished Group's outcome as Interrupted.
+        for finishing, _entered in finalizing.values():
+            _collect_and_emit(finishing, drain_timeout=0.0)
+        finalizing.clear()
         running.clear()
         raise
     except BaseException:
@@ -667,6 +702,10 @@ def _run_group_pool(
         for child in running.values():
             with contextlib.suppress(Exception):
                 child.finish()
+        for finishing, _entered in finalizing.values():
+            with contextlib.suppress(Exception):
+                finishing.finish(drain_timeout=0.0)
+        finalizing.clear()
         running.clear()
         raise
     finally:

@@ -26,6 +26,20 @@ def _module_isolated(name: str, body: str, marker: str = "isolated") -> str:
     )
 
 
+def _reported_timed_out(stdout: str, test_name: str) -> bool:
+    """True when a report names this test and calls a timeout right after it.
+
+    Windowed (not per-line): pytest wraps summary lines to the terminal
+    width, so the nodeid and the verdict can land on separate lines.
+    """
+    start = stdout.find(test_name)
+    while start != -1:
+        if "timed out" in stdout[start : start + 200]:
+            return True
+        start = stdout.find(test_name, start + 1)
+    return False
+
+
 class TestParallelSpeedup:
     def test_concurrent_children_beat_the_serial_bound(
         self, pytester: Pytester
@@ -165,7 +179,55 @@ class TestTimeoutIsolation:
         result = pytester.runpytest_subprocess("-q", "--isolated-numprocesses=2")
 
         result.assert_outcomes(failed=2)
-        assert result.stdout.str().count("timed out") >= 2
+        stdout = result.stdout.str()
+        # Causal per-Group: each Group's own report must carry the timeout
+        # verdict, not just some timeout somewhere.
+        assert _reported_timed_out(stdout, "test_stubborn")
+        assert _reported_timed_out(stdout, "test_overruns_own_deadline")
+
+class TestDrainIsolation:
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="needs a POSIX grandchild inheriting the Child's pipe fds",
+    )
+    def test_drain_freeze_cannot_misreport_a_sibling(
+        self, pytester: Pytester
+    ) -> None:
+        """A finished Child whose pipes a grandchild holds open must not be
+        able to freeze the sweep mid-finish() and have a sibling that
+        overran its deadline reaped as passed.
+
+        The reap used to join the reader threads inline: with a grandchild
+        holding stdout, finish() blocked for its full lifetime and no other
+        Child was swept meanwhile.
+        """
+        # Exits right after leaving a grandchild (inheriting stdout/stderr)
+        # alive ~5s; its own drain cannot finish before that.
+        holder = (
+            "import pytest, subprocess, sys\n"
+            "pytestmark = pytest.mark.isolated(timeout=30)\n"
+            "def test_leaves_pipe_holder():\n"
+            "    subprocess.Popen([sys.executable, '-c', "
+            "'import time; time.sleep(5)'])\n"
+        )
+        # Deadline ~3s, exits ~4.5s -- inside the ~5.4s freeze a blocking
+        # drain join imposes -- and must still be judged a timeout.
+        overrun = (
+            "import pytest, time\n"
+            "pytestmark = pytest.mark.isolated(timeout=3)\n"
+            "def test_overruns_during_freeze():\n"
+            "    time.sleep(4)\n"
+        )
+        pytester.makepyfile(test_a_hold=holder, test_b_norm=overrun)
+
+        result = pytester.runpytest_subprocess("-q", "--isolated-numprocesses=2")
+
+        # The holder Group completes for real (its report is on disk); only
+        # the output drain lags. The overrun Group must be the timeout --
+        # and named, not just counted, so the holder's own verdict cannot
+        # be confused with it.
+        result.assert_outcomes(passed=1, failed=1)
+        assert _reported_timed_out(result.stdout.str(), "test_overruns_during_freeze")
 
 
 class TestSerialExclusivity:

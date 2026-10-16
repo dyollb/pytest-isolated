@@ -292,14 +292,33 @@ class RunningChild:
             with contextlib.suppress(subprocess.TimeoutExpired):
                 self.proc.wait(timeout=_KILL_GRACE_SECONDS)
 
-    def finish(self) -> SubprocessResult:
-        """Collect the finished Child's result; pipes drained into buffers."""
+    def drain_done(self) -> bool:
+        """True when both reader threads have hit EOF: nothing left to drain.
+
+        Cheap (no locks, no waits), safe to call every sweep tick. A Child
+        whose pipes a grandchild inherited never reports done until the
+        grandchild exits; the pool caps how long it waits for that.
+        """
+        return all(
+            thread is None or not thread.is_alive()
+            for thread in (self._out_thread, self._err_thread)
+        )
+
+    def finish(
+        self, *, drain_timeout: float = _DRAIN_JOIN_TIMEOUT_SECONDS
+    ) -> SubprocessResult:
+        """Collect the finished Child's result; pipes drained into buffers.
+
+        ``drain_timeout=0.0`` never waits: the buffers are published
+        incrementally, so the snapshot holds every byte read so far even if a
+        reader is still blocked on a pipe a grandchild kept open.
+        """
         returncode = self.proc.poll()
         if returncode is None:  # pragma: no cover - caller reaps only after exit
             returncode = self.proc.wait()
         for thread in (self._out_thread, self._err_thread):
             if thread is not None:
-                thread.join(timeout=_DRAIN_JOIN_TIMEOUT_SECONDS)
+                thread.join(timeout=drain_timeout)
         return SubprocessResult(
             returncode=returncode,
             stdout=self._stdout.value(),
@@ -318,3 +337,13 @@ def launch_child(
 def poll_interval() -> float:
     """The pool's idle sleep between sweeps."""
     return _POLL_INTERVAL_SECONDS
+
+
+def drain_join_timeout() -> float:
+    """The cap on waiting for one Child's pipe drain before moving on.
+
+    Past this budget the pool emits the Group with the partial output the
+    readers already hold rather than let one Child's stuck pipes hold the
+    scheduling loop (and every sibling's deadline) hostage.
+    """
+    return _DRAIN_JOIN_TIMEOUT_SECONDS
