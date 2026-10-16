@@ -19,7 +19,7 @@ import pytest
 from pytest import Pytester
 
 from pytest_isolated.config import SUBPROC_ENV, SUBPROC_REPORT_PATH
-from pytest_isolated.launch import LaunchSpec, plan_launch
+from pytest_isolated.launch import Hardened, LaunchSpec, plan_launch
 
 # parseconfig always injects these; not interesting for the assertions below.
 _NOISE_PREFIXES = ("--basetemp",)
@@ -183,11 +183,16 @@ class TestReportChannel:
         assert first.report_path != second.report_path
 
 
-class TestParallelHardeningKwargs:
-    """basetemp/cache_dir are opt-in per launch (spec issue #70)."""
+class TestParallelHardening:
+    """The hardened plan form: root + slot, named inside the module.
+
+    Slot-to-directory naming is private to the Launch plan module; its only
+    interface is the argv, asserted here. Spec:
+    https://github.com/dyollb/pytest-isolated/issues/73
+    """
 
     def test_default_plan_has_no_injection(self, pytester: Pytester) -> None:
-        """The serial regression contract: no kwargs -> pre-parallel argv."""
+        """The serial regression contract: plain call -> pre-parallel argv."""
         _isolated_file(pytester)
         config = pytester.parseconfig("test_iso.py")
 
@@ -197,37 +202,51 @@ class TestParallelHardeningKwargs:
         assert "no:cacheprovider" not in spec.cmd
         assert not any("cache_dir" in tok for tok in spec.cmd)
 
-    def test_injection_lands_after_forwarded_args_before_nodeids(
-        self, pytester: Pytester
+    def test_hardened_plan_carries_slot_derived_paths_after_forwarded_args(
+        self, pytester: Pytester, tmp_path: Path
     ) -> None:
-        """Last-wins: injected --basetemp/-o must beat any forwarded ones."""
+        """Last-wins: hardened tokens must beat any forwarded --basetemp/-o,
+        so they append after the forwarded args and before the nodeids."""
         _isolated_file(pytester)
-        config = pytester.parseconfig("test_iso.py")
+        config = pytester.parseconfig("-v", "test_iso.py")
+        root = tmp_path / "grp"
 
         spec = plan_launch(
             config,
             ["test_iso.py::test_one"],
-            basetemp="/tmp/grp-0",
-            cache_dir="/tmp/cache-0",
+            hardened=Hardened(root=root, slot=3),
         )
 
         cmd = spec.cmd
         assert cmd[-1] == "test_iso.py::test_one"
+        # Path-native expected values: the naming (group-N / cache-N) is the
+        # literal from the spec; the separator style is the platform's own.
         assert cmd[-5:-1] == [
             "-o",
-            "cache_dir=/tmp/cache-0",
+            f"cache_dir={root / 'cache-3'}",
             "--basetemp",
-            "/tmp/grp-0",
+            str(root / "group-3"),
         ]
 
-    def test_only_basetemp_kwarg_injects_only_basetemp(
-        self, pytester: Pytester
+    def test_two_slots_derive_distinct_paths(
+        self, pytester: Pytester, tmp_path: Path
     ) -> None:
         _isolated_file(pytester)
         config = pytester.parseconfig("test_iso.py")
+        root = tmp_path / "grp"
 
-        spec = plan_launch(config, ["test_iso.py::test_one"], basetemp="/tmp/grp-1")
+        first = plan_launch(
+            config,
+            ["test_iso.py::test_one"],
+            hardened=Hardened(root=root, slot=0),
+        )
+        second = plan_launch(
+            config,
+            ["test_iso.py::test_one"],
+            hardened=Hardened(root=root, slot=1),
+        )
 
-        assert "--basetemp" in spec.cmd
-        assert "no:cacheprovider" not in spec.cmd
-        assert not any("cache_dir" in tok for tok in spec.cmd)
+        assert first.cmd[-3:-1] == ["--basetemp", str(root / "group-0")]
+        assert second.cmd[-3:-1] == ["--basetemp", str(root / "group-1")]
+        assert f"cache_dir={root / 'cache-0'}" in first.cmd
+        assert f"cache_dir={root / 'cache-1'}" in second.cmd

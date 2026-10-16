@@ -6,7 +6,6 @@ import contextlib
 import json
 import os
 import sys
-import tempfile
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -22,7 +21,13 @@ from .config import (
     SUBPROC_ENV,
     resolve_numprocesses,
 )
-from .launch import LaunchSpec, plan_launch
+from .launch import (
+    GroupTempRoot,
+    Hardened,
+    LaunchSpec,
+    open_group_temp_root,
+    plan_launch,
+)
 from .pool import (
     EscalateToKill,
     Reap,
@@ -530,33 +535,6 @@ def _emit_interrupted(
     _emit_all_results(group_items, results, ctx)
 
 
-def _group_basetemp_root(
-    config: pytest.Config,
-) -> tuple[tempfile.TemporaryDirectory[str] | None, Path]:
-    """Per-Group basetemp root (parallel hardening, spec issue #70).
-
-    Concurrent Children must not share pytest's basetemp counter. The tree
-    lives inside the Parent's resolved basetemp (artifacts stay together and
-    pytest's retention rules apply); with the tmpdir plugin disabled there is
-    no factory, so a plugin-owned temp dir cleaned at pool exit is used.
-
-    Resolution goes through the Parent's TempPathFactory on purpose: for a
-    user-given --basetemp, pytest's factory rm_rf's that directory lazily at
-    the first in-process tmp_path. Resolving here performs the wipe before
-    any Child writes and caches the result, so the later lazy call can never
-    delete finished Children's artifacts from under us.
-    """
-    factory = getattr(config, "_tmp_path_factory", None)
-    if factory is not None:
-        root = Path(factory.getbasetemp()) / "isolated-groups"
-        root.mkdir(parents=True, exist_ok=True)
-        return None, root
-    # tmpdir plugin disabled (e.g. -p no:tmpdir): no factory to resolve
-    # through, and the option may still be set — own our cleanup instead.
-    tmp = tempfile.TemporaryDirectory(prefix="pytest-isolated-basetemp-")
-    return tmp, Path(tmp.name)
-
-
 def _maxfail_tripped(session: pytest.Session) -> bool:
     return bool(
         session.testsfailed
@@ -586,12 +564,11 @@ def _run_group_pool(
     """
     pending = list(groups)
     running: OrderedDict[str, RunningChild] = OrderedDict()
-    group_seq = 0
+    slot = 0
     tripped = False
-    basetemp_ctx: tempfile.TemporaryDirectory[str] | None = None
-    basetemp_root: Path | None = None
+    temp_root: GroupTempRoot | None = None
     if max_parallel > 1:
-        basetemp_ctx, basetemp_root = _group_basetemp_root(config)
+        temp_root = open_group_temp_root(config)
     try:
         while pending or running:
             for name in decide_admissions(
@@ -607,19 +584,16 @@ def _run_group_pool(
                 pending.remove(name)
                 nodeids = [it.nodeid for it in groups[name]]
                 group_timeout = group_timeouts.get(name) or default_timeout
-                if max_parallel > 1 and basetemp_root is not None:
-                    # Parallel hardening: unique basetemp + unique fresh
-                    # cache dir per Group (see plan_launch; serial stays
-                    # unchanged). Freshness matters for --lf/--ff inherited
-                    # via env/ini: an empty cache means "run everything",
-                    # matching the Parent's resolved nodeids.
+                if temp_root is not None:
+                    # Parallel runs launch from the pool's temp root; the
+                    # Launch plan owns the slot's directory naming and the
+                    # fresh-cache semantics (see plan_launch).
                     spec = plan_launch(
                         config,
                         nodeids,
-                        basetemp=str(basetemp_root / f"group-{group_seq}"),
-                        cache_dir=str(basetemp_root / f"cache-{group_seq}"),
+                        hardened=Hardened(root=temp_root.root, slot=slot),
                     )
-                    group_seq += 1
+                    slot += 1
                 else:
                     spec = plan_launch(config, nodeids)
                 running[name] = launch_child(
@@ -696,6 +670,6 @@ def _run_group_pool(
         running.clear()
         raise
     finally:
-        if basetemp_ctx is not None:
-            basetemp_ctx.cleanup()
+        if temp_root is not None and temp_root.temp_dir is not None:
+            temp_root.temp_dir.cleanup()
     return tripped

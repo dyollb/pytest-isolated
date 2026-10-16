@@ -37,9 +37,11 @@ is told.
 
 **Launch plan**:
 The complete description of what one Child is told: its command line (with the
-root directory stated exactly once), environment, working directory (derived
-exactly once, a separate fact from the stated one — the two can never
-disagree), and Report channel. Fresh plan per Group.
+root directory stated exactly once, and — when the Group runs in a Group Pool
+— a private basetemp and cache dir named after the Group's slot in the Pool),
+environment, working directory (derived exactly once, a separate fact from the
+stated one — the two can never disagree), and Report channel. Fresh plan per
+Group.
 _Avoid_: launch command, spawn setup
 
 **Report channel**:
