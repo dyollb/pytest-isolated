@@ -201,6 +201,32 @@ class TestParallelHardening:
         assert "--basetemp" not in spec.cmd
         assert "no:cacheprovider" not in spec.cmd
         assert not any("cache_dir" in tok for tok in spec.cmd)
+        assert not any("lfnf" in tok for tok in spec.cmd)
+
+    def test_lfnf_none_policy_gets_fresh_cache_override(
+        self, pytester: Pytester, tmp_path: Path
+    ) -> None:
+        """With the Parent under --lfnf=none, the Child's fresh cache needs
+        the 'all' empty-cache policy or --lf deselects the Parent's own
+        selection; the override rides with the other hardened tokens."""
+        _isolated_file(pytester)
+        config = pytester.parseconfig("--lfnf=none", "test_iso.py")
+        root = tmp_path / "grp"
+
+        spec = plan_launch(
+            config,
+            ["test_iso.py::test_one"],
+            hardened=Hardened(root=root, slot=0),
+        )
+
+        assert spec.cmd[-7:-1] == [
+            "-o",
+            f"cache_dir={root / 'cache-0'}",
+            "--lfnf",
+            "all",
+            "--basetemp",
+            str(root / "group-0"),
+        ]
 
     def test_hardened_plan_carries_slot_derived_paths_after_forwarded_args(
         self, pytester: Pytester, tmp_path: Path

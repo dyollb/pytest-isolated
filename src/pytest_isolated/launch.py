@@ -114,10 +114,12 @@ def plan_launch(
     disabling the plugin also unregisters ``--lf``/``--ff``, so those options
     inherited through ``PYTEST_ADDOPTS`` or ini ``addopts`` crashed the Child's
     argument parsing. With the plugin alive and a fresh per-Group cache, they
-    parse and behave as they do in serial runs. Both tokens are appended AFTER
-    the forwarded args so an inherited ``--basetemp``/``-o`` cannot override
-    them. Serial launches pass no ``hardened`` and get the pre-parallel command
-    unchanged.
+    parse and behave as they do in serial runs -- except under the inherited
+    ``--lfnf=none`` empty-cache policy, which would deselect the Parent's own
+    selection against a fresh cache; there the Child also gets ``--lfnf all``
+    (see below). All tokens are appended AFTER the forwarded args so an
+    inherited ``--basetemp``/``-o``/``--lfnf`` cannot override them. Serial
+    launches pass no ``hardened`` and get the pre-parallel command unchanged.
     """
     capture_mode = config.getoption("capture", "fd")
 
@@ -139,14 +141,20 @@ def plan_launch(
     cmd.extend(child_args(config))
     # Parallel hardening, injected last so they win over forwarded duplicates.
     if hardened is not None:
-        cmd.extend(
-            [
-                "-o",
-                f"cache_dir={hardened.root / f'cache-{hardened.slot}'}",
-                "--basetemp",
-                str(hardened.root / f"group-{hardened.slot}"),
-            ]
-        )
+        hardened_args = ["-o", f"cache_dir={hardened.root / f'cache-{hardened.slot}'}"]
+        if config.getoption("last_failed_no_failures", None) == "none":
+            # The per-Group cache starts empty, so an inherited --lf under
+            # the 'none' empty-cache policy would deselect every nodeid the
+            # Parent just selected from its own cache: the Child would run
+            # nothing, exit 5, and be misread as a collection crash. 'all'
+            # (later wins over the inherited addopts) makes the empty cache
+            # run exactly the Parent's selection. Gated on the Parent
+            # actually carrying 'none': that proves this pytest registers
+            # --lfnf at all (7.4+, the floor here is 7.0) and that
+            # cacheprovider -- which owns both options -- is enabled.
+            hardened_args += ["--lfnf", "all"]
+        hardened_args += ["--basetemp", str(hardened.root / f"group-{hardened.slot}")]
+        cmd.extend(hardened_args)
     # The parent-resolved nodeids are the child's positional selectors.
     cmd.extend(nodeids)
 

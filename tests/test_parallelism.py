@@ -388,6 +388,35 @@ class TestInheritedCacheOptions:
 
         result.assert_outcomes(passed=1)
 
+    def test_lfnf_none_children_run_the_parent_selection(
+        self, pytester: Pytester
+    ) -> None:
+        """--lf --lfnf=none: the Parent selects the cached failures, but each
+        Child's FRESH cache under the inherited 'none' policy deselects every
+        selected nodeid -- exit 5 with no records, which the Parent misreads
+        as a collection crash. The hardened plan answers 'none' with 'all'."""
+        pytester.makeini("[pytest]\naddopts = --lf --lfnf=none\n")
+        failing = "def test_fails():\n    assert False, 'REAL-FAILURE-MARKER'\n"
+        pytester.makepyfile(
+            test_a=_module_isolated("a", failing),
+            test_b=_module_isolated("b", failing),
+        )
+        # Warm the Parent's cache without needing a full seeding run: the
+        # file format is a nodeid -> True mapping.
+        cache = pytester.path / ".pytest_cache" / "v" / "cache"
+        cache.mkdir(parents=True)
+        (cache / "lastfailed").write_text(
+            json.dumps({"test_a.py::test_fails": True, "test_b.py::test_fails": True})
+        )
+
+        result = pytester.runpytest_subprocess("-q", "--isolated-numprocesses=2")
+
+        result.assert_outcomes(failed=2)
+        out = result.stdout.str()
+        # The Children really ran the tests (not exit-5 ghosts).
+        assert "REAL-FAILURE-MARKER" in out
+        assert "no per-test report" not in out
+
 
 class TestInProcessTestsAfterDrain:
     def test_mixed_isolated_and_normal_at_n2(self, pytester: Pytester) -> None:
