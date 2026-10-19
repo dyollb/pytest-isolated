@@ -134,7 +134,7 @@ def _emit_report(
     if user_properties:
         rep.user_properties = user_properties
 
-    if wasxfail:
+    if wasxfail is not None:
         rep.wasxfail = wasxfail
 
     # For skipped tests, longrepr needs to be a tuple (path, lineno, reason)

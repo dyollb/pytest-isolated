@@ -13,7 +13,10 @@ environment variable, the issue's own reproducer idiom.
 
 from __future__ import annotations
 
+import pytest
 from pytest import Pytester
+
+from pytest_isolated.execution import _pytest_supports_parent_fixtures
 
 CHILD_GUARD = 'os.environ.get("PYTEST_RUNNING_IN_SUBPROCESS")'
 
@@ -386,6 +389,98 @@ def test_one():
         assert result.ret == 0
         assert "1 xfailed" in result.stdout.str()
         assert "INTERNALERROR" not in result.stdout.str() + result.stderr.str()
+
+    def test_parent_fixture_reasonless_xfail_stays_xfailed(
+        self, pytester: Pytester
+    ) -> None:
+        """pytest.xfail() allows an empty reason; the report must still carry
+        the xfail classification, not collapse into a plain skip."""
+        pytester.makeconftest(
+            f"""
+import os
+
+import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def xfail_setup():
+    if not {CHILD_GUARD}:
+        pytest.xfail()
+    yield
+"""
+        )
+        pytester.makepyfile(
+            test_a="""
+import pytest
+
+
+@pytest.mark.isolated
+def test_one():
+    assert True
+"""
+        )
+
+        result = pytester.runpytest()
+
+        assert result.ret == 0
+        assert "1 xfailed" in result.stdout.str()
+        assert "1 skipped" not in result.stdout.str()
+
+    def test_parent_fixture_reasonless_skip_gets_fallback_reason(
+        self, pytester: Pytester
+    ) -> None:
+        """pytest.skip() allows an empty reason; -rs summaries and JUnit
+        consumers need a nonempty reason string."""
+        pytester.makeconftest(
+            f"""
+import os
+
+import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def gated_setup():
+    if not {CHILD_GUARD}:
+        pytest.skip()
+    yield
+"""
+        )
+        pytester.makepyfile(
+            test_a="""
+import pytest
+
+
+@pytest.mark.isolated
+def test_one():
+    assert True
+"""
+        )
+
+        result = pytester.runpytest("-rs")
+
+        assert result.ret == 0
+        assert "1 skipped" in result.stdout.str()
+        assert "no reason" in result.stdout.str().lower()
+
+
+class TestParentFixturePytestVersionGate:
+    """The Parent fixture mechanism needs pytest>=8 fixture internals; on
+    pytest 7 the run must keep the pre-#75 behavior, never abort."""
+
+    @pytest.mark.parametrize(
+        ("version", "supported"),
+        [
+            ("7.0.0", False),
+            ("7.4.4", False),
+            ("8.0.0", True),
+            ("8.0.0rc1", True),
+            ("9.1.1", True),
+            ("2025.1", True),
+            ("nightly", True),  # unparsable: assume a modern pytest
+        ],
+    )
+    def test_gate_predicate(self, version: str, supported: bool) -> None:
+        assert _pytest_supports_parent_fixtures(version) is supported
 
 
 class TestParentFixtureFinalizerOutcomes:

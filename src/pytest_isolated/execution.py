@@ -64,6 +64,28 @@ _PER_CHILD_SESSION_FIXTURE_WARNING: Final = (
     "move per-run state to pytest_sessionstart/pytest_sessionfinish."
 )
 
+# The Parent fixture mechanism rides pytest 8 fixture internals: the
+# FixtureRequest constructor kwargs and the Node-based
+# getfixturedefs/_getautousenames lookups do not exist on pytest 7.
+_PARENT_FIXTURES_PYTEST_MIN_MAJOR: Final = 8
+
+_PARENT_FIXTURES_PYTEST_VERSION_WARNING: Final = (
+    "pytest-isolated: setting up session-scoped fixtures in the Parent "
+    f"requires pytest>={_PARENT_FIXTURES_PYTEST_MIN_MAJOR} (found "
+    "{version}); this run keeps the pre-#75 behavior where session "
+    "autouse fixtures do not run in the Parent. Upgrade pytest to enable "
+    "it (https://github.com/dyollb/pytest-isolated/issues/75)."
+)
+
+
+def _pytest_supports_parent_fixtures(version: str) -> bool:
+    """Whether this pytest version supports the Parent fixture mechanism."""
+    major = version.partition(".")[0]
+    try:
+        return int(major) >= _PARENT_FIXTURES_PYTEST_MIN_MAJOR
+    except ValueError:  # unrecognized version: assume a modern pytest
+        return True
+
 
 class _SessionAnchoredRequest(FixtureRequest):
     """A FixtureRequest whose node is the Session.
@@ -229,16 +251,18 @@ def _report_parent_fixture_outcome(
     failure.
     """
     if excinfo.errisinstance(Skipped):
+        reason = str(excinfo.value) or "skipped (no reason given)"
         for it in items:
-            _emit_report(it, when=when, outcome="skipped", longrepr=str(excinfo.value))
+            _emit_report(it, when=when, outcome="skipped", longrepr=reason)
         return
     if excinfo.errisinstance(XFailed):
+        reason = str(excinfo.value) or "xfail (no reason given)"
         for it in items:
             _emit_report(
                 it,
                 when=when,
                 outcome="skipped",
-                wasxfail=str(excinfo.value),
+                wasxfail=reason,
             )
         return
     longrepr = excinfo.getrepr(style="long")
@@ -641,13 +665,27 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
     # teardown of partial setup rides pytest's session-end drain like any
     # other stock error path
     # (https://github.com/dyollb/pytest-isolated/issues/77).
+    # On pytest 7 the mechanism is unavailable (fixture internals differ);
+    # those runs keep the pre-#75 behavior, loudly warned.
+    parent_fixtures_ok = _pytest_supports_parent_fixtures(pytest.__version__)
+
     setup_error: pytest.ExceptionInfo[BaseException] | None = None
-    try:
-        _setup_parent_session_fixtures(session, isolated_items)
-    except (KeyboardInterrupt, Exit):
-        raise
-    except BaseException:
-        setup_error = pytest.ExceptionInfo.from_current()
+    if parent_fixtures_ok:
+        try:
+            _setup_parent_session_fixtures(session, isolated_items)
+        except (KeyboardInterrupt, Exit):
+            raise
+        except BaseException:
+            setup_error = pytest.ExceptionInfo.from_current()
+    else:
+        config.issue_config_time_warning(
+            UserWarning(
+                _PARENT_FIXTURES_PYTEST_VERSION_WARNING.format(
+                    version=pytest.__version__
+                )
+            ),
+            stacklevel=1,
+        )
 
     if setup_error is not None:
         _report_parent_fixture_outcome(
@@ -655,7 +693,8 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         )
         return 1
 
-    _check_per_child_session_fixtures(session, isolated_items)
+    if parent_fixtures_ok:
+        _check_per_child_session_fixtures(session, isolated_items)
 
     tripped = _run_group_pool(
         session=session,
@@ -678,7 +717,8 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
         nextitem = normal_items[idx + 1] if idx + 1 < len(normal_items) else None
         item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
 
-    _teardown_parent_session_fixtures(session, isolated_items)
+    if parent_fixtures_ok:
+        _teardown_parent_session_fixtures(session, isolated_items)
 
     return 1 if session.testsfailed else 0
 

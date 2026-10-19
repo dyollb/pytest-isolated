@@ -260,6 +260,10 @@ runs once per Child, not once per session (fixture values cannot cross a
 process boundary). pytest-isolated warns about this; `--isolated-strict` (or
 ini `isolated_strict = true`) turns the warning into an error.
 
+Parent-side setup requires **pytest >= 8** (it rides pytest 8's fixture
+internals). On pytest 7 the plugin keeps its pre-0.7 behavior — session
+autouse fixtures do not run in the Parent — and says so with a warning.
+
 > **Upgrade note (0.7.1).** If you worked around issue #75 by copying your
 > session-fixture logic into `pytest_sessionstart`/`pytest_sessionfinish` and
 > kept the original `scope="session"` autouse fixture, both halves now run in
