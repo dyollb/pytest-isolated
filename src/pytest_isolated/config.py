@@ -55,6 +55,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "Analogous to pytest-xdist's -n/--numprocesses."
         ),
     )
+    group.addoption(
+        "--isolated-strict",
+        action="store_true",
+        default=False,
+        help=(
+            "Promote pytest-isolated Parent/Child contract warnings to errors "
+            "(currently: a session-scoped fixture requested by Isolated tests "
+            "runs once per Child, not once per session)."
+        ),
+    )
     parser.addini(
         "isolated_timeout",
         type="string",
@@ -68,6 +78,15 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help=(
             "Default for --isolated-numprocesses: number of isolated test "
             "groups to run concurrently (integer or 'auto'). Empty: serial."
+        ),
+    )
+    parser.addini(
+        "isolated_strict",
+        type="bool",
+        default=False,
+        help=(
+            "Default for --isolated-strict: promote pytest-isolated "
+            "Parent/Child contract warnings to errors."
         ),
     )
 

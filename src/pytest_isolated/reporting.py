@@ -117,7 +117,7 @@ def _emit_report(
     *,
     when: Literal["setup", "call", "teardown"],
     outcome: Literal["passed", "failed", "skipped"],
-    longrepr: str = "",
+    longrepr: Any = "",
     duration: float = 0.0,
     stdout: str = "",
     stderr: str = "",

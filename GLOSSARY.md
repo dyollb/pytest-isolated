@@ -33,6 +33,13 @@ The maximum run time one Group's Child gets (marker > CLI/ini default). A
 Parent-side run parameter on the Group, deliberately not part of what the Child
 is told.
 
+**Parent Session Fixtures**:
+The session-scoped autouse fixture stack the Parent sets up itself before the
+first Child launches and tears down at loop end, so session setup works even
+when every Item runs in a Child. Children keep their own fixture stack; no
+fixture value crosses the process boundary.
+_Avoid_: shared fixtures (nothing is shared), global setup
+
 ### The child's interface
 
 **Launch plan**:

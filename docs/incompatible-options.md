@@ -82,7 +82,7 @@ the parent process and are not forwarded to child subprocesses.
 - `--rootdir` (the parent's resolved root directory is stated exactly once on
   the child command line; user-supplied forms are replaced)
 - internal plugin flags: `--isolated`, `--isolated-timeout`,
-  `--isolated-numprocesses`, `--no-isolation`
+  `--isolated-numprocesses`, `--isolated-strict`, `--no-isolation`
 - positional test selectors/paths from CLI (children receive resolved nodeids)
 
 ## Category C: Forwarded to child by default

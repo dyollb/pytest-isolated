@@ -7,11 +7,15 @@ import json
 import os
 import sys
 import time
+import warnings
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
-from typing import Final, Literal, NamedTuple, TypeAlias, cast
+from typing import Any, Final, Literal, NamedTuple, TypeAlias, cast
 
 import pytest
+from _pytest.fixtures import FixtureDef, FixtureRequest, Scope
+from _pytest.nodes import Node
 
 from .config import (
     CONFIG_ATTR_GROUP_SERIAL,
@@ -51,6 +55,179 @@ from .reporting import (
 # Type aliases for clarity
 Phase: TypeAlias = Literal["setup", "call", "teardown"]
 TestResults: TypeAlias = dict[str, dict[str, _TestRecord]]
+
+_PER_CHILD_SESSION_FIXTURE_WARNING: Final = (
+    "pytest-isolated: session-scoped fixture {name!r} is requested by "
+    "Isolated tests; it runs once per Child process, not once per session "
+    "in the Parent. Make it autouse to have the Parent set it up too, or "
+    "move per-run state to pytest_sessionstart/pytest_sessionfinish."
+)
+
+
+class _SessionAnchoredRequest(FixtureRequest):
+    """A FixtureRequest whose node is the Session.
+
+    The Parent never runs Item setup, so a function-anchored request
+    (TopRequest) reads to pytest's guards as a getfixturevalue during
+    teardown: deprecation today, planned hard failure. The Session node is
+    active on the SetupState stack (see _setup_parent_session_fixtures).
+    """
+
+    def __init__(self, pyfuncitem: pytest.Item) -> None:
+        super().__init__(
+            pyfuncitem=cast("Any", pyfuncitem),
+            fixturename=None,
+            arg2fixturedefs={},
+            fixture_defs={},
+            _ispytest=True,
+        )
+
+    @property
+    def _scope(self) -> Scope:
+        return Scope.Session
+
+    def _check_scope(
+        self,
+        requested_fixturedef: FixtureDef[object],
+        requested_scope: Scope,
+    ) -> None:
+        if self._scope > requested_scope:
+            pytest.fail(
+                f"ScopeMismatch: session-anchored request cannot ask for "
+                f"{requested_scope.value}-scoped fixture "
+                f"{requested_fixturedef.argname}",
+                pytrace=False,
+            )
+
+    @property
+    def node(self) -> Node:
+        return self._pyfuncitem.session
+
+    def _fillfixtures(self) -> None:
+        raise NotImplementedError
+
+    def addfinalizer(self, finalizer: Callable[[], object]) -> None:
+        self.node.addfinalizer(finalizer)
+
+
+def _setup_parent_session_fixtures(
+    session: pytest.Session, items: list[pytest.Item]
+) -> None:
+    """Set up the session-scope autouse fixture stack in the Parent.
+
+    pytest instantiates session fixtures through the Item setup path, which
+    the Parent never runs for Isolated Items; without this, a suite whose
+    every test is Isolated silently skips session setup and teardown
+    (https://github.com/dyollb/pytest-isolated/issues/75, spec
+    https://github.com/dyollb/pytest-isolated/issues/77).
+
+    The Session node is pushed onto the SetupState stack so finalizers that
+    pytest's own machinery registers land there and run at
+    teardown_exact(None); a later in-process Item setup sees the pushed
+    Session as the prefix of its collector chain, and FixtureDef caching
+    keeps everything once-only. Fixture bodies and their errors run through
+    pytest's normal FixtureDef.execute() path -- setup errors propagate.
+    """
+    config = session.config
+    fixture_manager = session._fixturemanager
+    get_autousenames = getattr(fixture_manager, "_getautousenames", None)
+    setup_state = getattr(session, "_setupstate", None)
+    if get_autousenames is None or setup_state is None:
+        _warn_parent_setup_unavailable(config, "pytest fixture internals")
+        return
+    stack = getattr(setup_state, "stack", None)
+    try:
+        if stack is not None and session not in stack:
+            stack[session] = ([session.teardown], None)
+    except TypeError as exc:  # pragma: no cover - defensive against drift
+        _warn_parent_setup_unavailable(config, repr(exc))
+        return
+
+    done: set[int] = set()
+    for item in items:
+        for name in get_autousenames(item):
+            fixture_defs = fixture_manager.getfixturedefs(name, item)
+            if not fixture_defs:
+                continue
+            fixture_def = fixture_defs[-1]
+            if fixture_def._scope is not Scope.Session or id(fixture_def) in done:
+                continue
+            done.add(id(fixture_def))
+            _SessionAnchoredRequest(item).getfixturevalue(name)
+
+
+def _warn_parent_setup_unavailable(config: pytest.Config, why: str) -> None:
+    config.issue_config_time_warning(
+        UserWarning(
+            "pytest-isolated: could not set up session-scoped fixtures in "
+            f"the Parent ({why}); session autouse fixtures may not run "
+            "before isolated groups. Report against pytest-isolated."
+        ),
+        stacklevel=1,
+    )
+
+
+def _check_per_child_session_fixtures(
+    session: pytest.Session, items: list[pytest.Item]
+) -> None:
+    """Flag session fixtures that only Children will run.
+
+    Called after the Parent stack is set up: a requested session fixture
+    whose FixtureDef is still cold was not executed in the Parent, so it
+    will run once per Child instead of once per session.
+    """
+    config = session.config
+    strict = bool(config.getoption("isolated_strict", False)) or bool(
+        config.getini("isolated_strict")
+    )
+    fixture_manager = session._fixturemanager
+    reported: set[str] = set()
+    names: list[str] = []
+    for item in items:
+        for name in getattr(item, "fixturenames", ()):  # pragma: no branch
+            if name in reported:
+                continue
+            reported.add(name)
+            fixture_defs = fixture_manager.getfixturedefs(name, item)
+            if not fixture_defs:
+                continue
+            fixture_def = fixture_defs[-1]
+            if (
+                fixture_def._scope is Scope.Session
+                and fixture_def.cached_result is None
+                # pytest's own session fixtures (tmp_path_factory...) are
+                # per-Child by design; only user fixtures are the trap
+                and getattr(fixture_def.func, "__module__", "").partition(".")[0]
+                != "_pytest"
+            ):
+                names.append(name)
+    if not names:
+        return
+    messages = [_PER_CHILD_SESSION_FIXTURE_WARNING.format(name=name) for name in names]
+    if strict:
+        raise pytest.UsageError("\n".join(messages))
+    for message in messages:
+        warnings.warn(message, stacklevel=1)
+
+
+def _teardown_parent_session_fixtures(
+    session: pytest.Session, items: list[pytest.Item]
+) -> None:
+    """Drain the SetupState stack at loop end.
+
+    Stock pytest drains it inside the loop (the last Item's teardown), which
+    lands session fixture teardown before pytest_sessionfinish hooks; with
+    no in-process Items the loop must drain it itself. Idempotent when the
+    in-process protocol already drained everything.
+    """
+    try:
+        session._setupstate.teardown_exact(None)
+    except Exception:
+        longrepr = pytest.ExceptionInfo.from_current().getrepr(style="long")
+        for it in items:
+            _emit_report(it, when="teardown", outcome="failed", longrepr=longrepr)
+            session.testsfailed += 1
+
 
 _PARALLEL_NO_CAPTURE_WARNING: Final = (
     "pytest-isolated: running Child processes concurrently with capture "
@@ -413,26 +590,51 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
 
     serial_groups = frozenset(getattr(config, CONFIG_ATTR_GROUP_SERIAL, ()))
 
-    tripped = _run_group_pool(
-        session=session,
-        config=config,
-        ctx=ctx,
-        groups=groups,
-        group_timeouts=group_timeouts,
-        default_timeout=default_timeout,
-        serial_groups=serial_groups,
-        max_parallel=max_parallel,
-        capture_output=capture_output,
-    )
-    if tripped:
-        # maxfail/exitfirst: stop after in-flight Children drained; unlaunched
-        # Groups and in-process tests stay silent (xdist shutdown semantics).
-        return 1
+    isolated_items = [it for group_items in groups.values() for it in group_items]
+
+    # The Parent owns the session fixture stack; Children keep their own
+    # (a separate process cannot share fixture values). Setup failures
+    # abort before any Child launches, and teardown is deferred to pytest's
+    # session-end drain like any other stock error path
+    # (https://github.com/dyollb/pytest-isolated/issues/77).
+    setup_error: pytest.ExceptionInfo[BaseException] | None = None
+    try:
+        _setup_parent_session_fixtures(session, isolated_items)
+    except Exception:
+        setup_error = pytest.ExceptionInfo.from_current()
+
+    if setup_error is not None:
+        longrepr = setup_error.getrepr(style="long")
+        for it in isolated_items:
+            _emit_report(it, when="setup", outcome="failed", longrepr=longrepr)
+            ctx.session.testsfailed += 1
+    else:
+        _check_per_child_session_fixtures(session, isolated_items)
+
+        tripped = _run_group_pool(
+            session=session,
+            config=config,
+            ctx=ctx,
+            groups=groups,
+            group_timeouts=group_timeouts,
+            default_timeout=default_timeout,
+            serial_groups=serial_groups,
+            max_parallel=max_parallel,
+            capture_output=capture_output,
+        )
+        if tripped:
+            # maxfail/exitfirst: stop after in-flight Children drained;
+            # unlaunched Groups and in-process tests stay silent (xdist
+            # shutdown semantics).
+            return 1
 
     # Run normal tests in-process, after the pool has fully drained.
     for idx, item in enumerate(normal_items):
         nextitem = normal_items[idx + 1] if idx + 1 < len(normal_items) else None
         item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
+
+    if setup_error is None:
+        _teardown_parent_session_fixtures(session, isolated_items)
 
     return 1 if session.testsfailed else 0
 

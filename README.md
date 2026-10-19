@@ -172,6 +172,9 @@ pytest --isolated-timeout=60
 # Disable subprocess isolation for debugging
 pytest --no-isolation
 
+# Promote Parent/Child contract warnings to errors
+pytest --isolated-strict
+
 # Control output capture (standard pytest flags work with isolated tests)
 pytest -s                    # Disable capture, show all output
 pytest --capture=sys         # Capture at sys.stdout/stderr level
@@ -186,6 +189,7 @@ pytest --no-isolation --pdb
 [pytest]
 isolated_timeout = 300
 isolated_numprocesses = auto
+isolated_strict = true
 ```
 
 Or in `pyproject.toml`:
@@ -194,6 +198,7 @@ Or in `pyproject.toml`:
 [tool.pytest.ini_options]
 isolated_timeout = "300"
 isolated_numprocesses = "auto"
+isolated_strict = true
 ```
 
 ### Parallel Execution
@@ -237,6 +242,29 @@ pytest --isolated --isolated-numprocesses=auto
 Unlike xdist, every Child is a complete fresh pytest process for one Group — no
 controller/worker protocol to break on Windows — at the cost of one pytest startup
 per Group rather than per worker.
+
+## Fixtures: Parent vs Children
+
+There are two fixture worlds per run. Each Child is a fresh pytest session and
+runs the fixtures its Group's tests need — exactly what pytest has always done.
+The Parent keeps the session-scoped world: before the first Child launches it
+sets up every `scope="session"` autouse conftest fixture (plus their
+fixture dependencies), and it tears them down at loop end — so
+"start a service for the whole run" works even when every test is isolated
+([issue #75](https://github.com/dyollb/pytest-isolated/issues/75)). Module-
+and class-scoped fixtures belong to the Child that owns those tests; the
+Parent does not run them.
+
+A session fixture that is *not* autouse but is requested by an isolated test
+runs once per Child, not once per session (fixture values cannot cross a
+process boundary). pytest-isolated warns about this; `--isolated-strict` (or
+ini `isolated_strict = true`) turns the warning into an error.
+
+> **Upgrade note (0.7.1).** If you worked around issue #75 by copying your
+> session-fixture logic into `pytest_sessionstart`/`pytest_sessionfinish` and
+> kept the original `scope="session"` autouse fixture, both halves now run in
+> the Parent — delete one copy. If you *moved* the logic out of the fixture,
+> nothing changes for you.
 
 ## Real-World Use Cases
 
