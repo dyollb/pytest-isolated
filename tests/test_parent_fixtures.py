@@ -235,6 +235,203 @@ def test_one():
         assert "broken_setup" in result.stdout.str() + result.stderr.str()
         assert not (pytester.path / "child.ran").exists()
 
+    def test_setup_error_also_stops_normal_items(self, pytester: Pytester) -> None:
+        """The abort from
+        https://github.com/dyollb/pytest-isolated/issues/77 covers the whole
+        run: a non-isolated Item outside the broken fixture's visibility must
+        not cause side effects after Parent initialization failed."""
+        broken = pytester.mkdir("broken")
+        (broken / "conftest.py").write_text(
+            f"""
+import os
+
+import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def broken_setup():
+    if not {CHILD_GUARD}:
+        msg = "parent session setup failed"
+        raise RuntimeError(msg)
+    yield
+"""
+        )
+        (broken / "test_iso.py").write_text(
+            """
+import pytest
+
+
+@pytest.mark.isolated
+def test_isolated():
+    assert True
+"""
+        )
+        pytester.makepyfile(
+            test_plain="""
+import pathlib
+
+
+def test_plain():
+    pathlib.Path("plain.ran").write_text("x")
+"""
+        )
+
+        result = pytester.runpytest()
+
+        assert result.ret != 0
+        assert not (pytester.path / "plain.ran").exists()
+
+    def test_parent_fixture_skip_skips_isolated_items(self, pytester: Pytester) -> None:
+        """pytest.skip() raises an outcome exception (BaseException-based);
+        it must report the Items skipped, not crash the session."""
+        pytester.makeconftest(
+            f"""
+import os
+
+import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def gated_setup():
+    if not {CHILD_GUARD}:
+        pytest.skip("service unavailable")
+    yield
+"""
+        )
+        pytester.makepyfile(
+            test_a="""
+import pathlib
+
+import pytest
+
+
+@pytest.mark.isolated
+def test_one():
+    pathlib.Path("child.ran").write_text("x")
+"""
+        )
+
+        result = pytester.runpytest()
+
+        assert result.ret == 0
+        assert "1 skipped" in result.stdout.str()
+        assert "INTERNALERROR" not in result.stdout.str() + result.stderr.str()
+        assert not (pytester.path / "child.ran").exists()
+
+    def test_parent_fixture_fail_reports_setup_error(self, pytester: Pytester) -> None:
+        """pytest.fail() in a Parent fixture is a reported setup failure."""
+        pytester.makeconftest(
+            f"""
+import os
+
+import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def failing_setup():
+    if not {CHILD_GUARD}:
+        pytest.fail("dead on arrival")
+    yield
+"""
+        )
+        pytester.makepyfile(
+            test_a="""
+import pathlib
+
+import pytest
+
+
+@pytest.mark.isolated
+def test_one():
+    pathlib.Path("child.ran").write_text("x")
+"""
+        )
+
+        result = pytester.runpytest()
+
+        assert result.ret != 0
+        assert "dead on arrival" in result.stdout.str() + result.stderr.str()
+        assert "INTERNALERROR" not in result.stdout.str() + result.stderr.str()
+        assert not (pytester.path / "child.ran").exists()
+
+    def test_parent_fixture_xfail_reports_xfailed(self, pytester: Pytester) -> None:
+        """pytest.xfail() in a Parent fixture is reported, not fatal."""
+        pytester.makeconftest(
+            f"""
+import os
+
+import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def xfail_setup():
+    if not {CHILD_GUARD}:
+        pytest.xfail("known-broken environment")
+    yield
+"""
+        )
+        pytester.makepyfile(
+            test_a="""
+import pytest
+
+
+@pytest.mark.isolated
+def test_one():
+    assert True
+"""
+        )
+
+        result = pytester.runpytest()
+
+        assert result.ret == 0
+        assert "1 xfailed" in result.stdout.str()
+        assert "INTERNALERROR" not in result.stdout.str() + result.stderr.str()
+
+
+class TestParentFixtureFinalizerOutcomes:
+    """Finalizer errors during the loop-end teardown drain are reported."""
+
+    def test_finalizer_fail_reports_teardown_failure(self, pytester: Pytester) -> None:
+        """teardown_exact re-raises pytest.fail() from a finalizer (and a
+        BaseExceptionGroup for several); outcome exceptions are not
+        Exceptions and must not escape as INTERNALERROR."""
+        pytester.makeconftest(
+            f"""
+import os
+
+import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def leaky_setup():
+    if {CHILD_GUARD}:
+        yield
+        return
+
+    def finalize():
+        pytest.fail("teardown boom")
+
+    yield
+    finalize()
+"""
+        )
+        pytester.makepyfile(
+            test_a="""
+import pytest
+
+
+@pytest.mark.isolated
+def test_one():
+    assert True
+"""
+        )
+
+        result = pytester.runpytest()
+
+        assert result.ret != 0
+        assert "teardown boom" in result.stdout.str() + result.stderr.str()
+        assert "INTERNALERROR" not in result.stdout.str() + result.stderr.str()
+
 
 class TestParentSessionFixtureStrictness:
     """Non-autouse session fixtures requested by Isolated tests run once per
@@ -267,6 +464,51 @@ def test_one(per_child):
 
     def test_strict_flag_promotes_warning_to_error(self, pytester: Pytester) -> None:
         pytester.makepyfile(test_a=self._NONAUTOUSE_TEST)
+
+        result = pytester.runpytest("--isolated-strict")
+
+        assert result.ret != 0
+        assert "once per Child" in result.stdout.str() + result.stderr.str()
+
+    def test_strict_checks_effective_fixture_per_item(self, pytester: Pytester) -> None:
+        """An earlier Item's function-scoped fixture must not shadow a later
+        Item's session-scoped fixture of the same name: the effective
+        FixtureDef is what gets checked, per Item."""
+        pytester.makeconftest(
+            """
+import pytest
+
+
+@pytest.fixture(scope="session")
+def resource():
+    yield "session"
+"""
+        )
+        # test_a collects first and overrides 'resource' with a
+        # function-scoped fixture; test_b still uses the session one.
+        pytester.makepyfile(
+            test_a="""
+import pytest
+
+
+@pytest.fixture
+def resource():
+    yield "function"
+
+
+@pytest.mark.isolated
+def test_uses_local(resource):
+    assert resource == "function"
+""",
+            test_b="""
+import pytest
+
+
+@pytest.mark.isolated
+def test_uses_session(resource):
+    assert resource == "session"
+""",
+        )
 
         result = pytester.runpytest("--isolated-strict")
 

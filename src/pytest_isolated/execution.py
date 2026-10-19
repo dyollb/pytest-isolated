@@ -16,6 +16,7 @@ from typing import Any, Final, Literal, NamedTuple, TypeAlias, cast
 import pytest
 from _pytest.fixtures import FixtureDef, FixtureRequest, Scope
 from _pytest.nodes import Node
+from _pytest.outcomes import Exit, Skipped, XFailed
 
 from .config import (
     CONFIG_ATTR_GROUP_SERIAL,
@@ -181,17 +182,19 @@ def _check_per_child_session_fixtures(
         config.getini("isolated_strict")
     )
     fixture_manager = session._fixturemanager
-    reported: set[str] = set()
+    seen: set[int] = set()
     names: list[str] = []
     for item in items:
         for name in getattr(item, "fixturenames", ()):  # pragma: no branch
-            if name in reported:
-                continue
-            reported.add(name)
             fixture_defs = fixture_manager.getfixturedefs(name, item)
             if not fixture_defs:
                 continue
             fixture_def = fixture_defs[-1]
+            # Deduplicate per effective FixtureDef, not per name: the same
+            # name may resolve to different fixtures for different Items.
+            if id(fixture_def) in seen:
+                continue
+            seen.add(id(fixture_def))
             if (
                 fixture_def._scope is Scope.Session
                 and fixture_def.cached_result is None
@@ -210,6 +213,40 @@ def _check_per_child_session_fixtures(
         warnings.warn(message, stacklevel=1)
 
 
+def _report_parent_fixture_outcome(
+    session: pytest.Session,
+    items: list[pytest.Item],
+    excinfo: pytest.ExceptionInfo[BaseException],
+    *,
+    when: Literal["setup", "teardown"],
+) -> None:
+    """Report a Parent fixture outcome for Items that never ran their protocol.
+
+    Outcome exceptions (fail/skip/xfail) derive from BaseException, so they
+    reach callers of getfixturevalue and teardown_exact just like user
+    exceptions do; each maps to its phase-report semantics, everything else
+    (including teardown_exact's BaseExceptionGroup of finalizer errors) is a
+    failure.
+    """
+    if excinfo.errisinstance(Skipped):
+        for it in items:
+            _emit_report(it, when=when, outcome="skipped", longrepr=str(excinfo.value))
+        return
+    if excinfo.errisinstance(XFailed):
+        for it in items:
+            _emit_report(
+                it,
+                when=when,
+                outcome="skipped",
+                wasxfail=str(excinfo.value),
+            )
+        return
+    longrepr = excinfo.getrepr(style="long")
+    for it in items:
+        _emit_report(it, when=when, outcome="failed", longrepr=longrepr)
+        session.testsfailed += 1
+
+
 def _teardown_parent_session_fixtures(
     session: pytest.Session, items: list[pytest.Item]
 ) -> None:
@@ -218,15 +255,21 @@ def _teardown_parent_session_fixtures(
     Stock pytest drains it inside the loop (the last Item's teardown), which
     lands session fixture teardown before pytest_sessionfinish hooks; with
     no in-process Items the loop must drain it itself. Idempotent when the
-    in-process protocol already drained everything.
+    in-process protocol already drained everything. Interrupts and
+    pytest.exit() keep propagating; finalizer failures (including outcome
+    exceptions and grouped ones) become teardown reports.
     """
     try:
         session._setupstate.teardown_exact(None)
-    except Exception:
-        longrepr = pytest.ExceptionInfo.from_current().getrepr(style="long")
-        for it in items:
-            _emit_report(it, when="teardown", outcome="failed", longrepr=longrepr)
-            session.testsfailed += 1
+    except (KeyboardInterrupt, Exit):
+        raise
+    except BaseException:
+        _report_parent_fixture_outcome(
+            session,
+            items,
+            pytest.ExceptionInfo.from_current(),
+            when="teardown",
+        )
 
 
 _PARALLEL_NO_CAPTURE_WARNING: Final = (
@@ -593,48 +636,49 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
     isolated_items = [it for group_items in groups.values() for it in group_items]
 
     # The Parent owns the session fixture stack; Children keep their own
-    # (a separate process cannot share fixture values). Setup failures
-    # abort before any Child launches, and teardown is deferred to pytest's
-    # session-end drain like any other stock error path
+    # (a separate process cannot share fixture values). A setup error aborts
+    # the whole run before any Child launches or any normal Item runs, and
+    # teardown of partial setup rides pytest's session-end drain like any
+    # other stock error path
     # (https://github.com/dyollb/pytest-isolated/issues/77).
     setup_error: pytest.ExceptionInfo[BaseException] | None = None
     try:
         _setup_parent_session_fixtures(session, isolated_items)
-    except Exception:
+    except (KeyboardInterrupt, Exit):
+        raise
+    except BaseException:
         setup_error = pytest.ExceptionInfo.from_current()
 
     if setup_error is not None:
-        longrepr = setup_error.getrepr(style="long")
-        for it in isolated_items:
-            _emit_report(it, when="setup", outcome="failed", longrepr=longrepr)
-            ctx.session.testsfailed += 1
-    else:
-        _check_per_child_session_fixtures(session, isolated_items)
-
-        tripped = _run_group_pool(
-            session=session,
-            config=config,
-            ctx=ctx,
-            groups=groups,
-            group_timeouts=group_timeouts,
-            default_timeout=default_timeout,
-            serial_groups=serial_groups,
-            max_parallel=max_parallel,
-            capture_output=capture_output,
+        _report_parent_fixture_outcome(
+            session, isolated_items, setup_error, when="setup"
         )
-        if tripped:
-            # maxfail/exitfirst: stop after in-flight Children drained;
-            # unlaunched Groups and in-process tests stay silent (xdist
-            # shutdown semantics).
-            return 1
+        return 1
+
+    _check_per_child_session_fixtures(session, isolated_items)
+
+    tripped = _run_group_pool(
+        session=session,
+        config=config,
+        ctx=ctx,
+        groups=groups,
+        group_timeouts=group_timeouts,
+        default_timeout=default_timeout,
+        serial_groups=serial_groups,
+        max_parallel=max_parallel,
+        capture_output=capture_output,
+    )
+    if tripped:
+        # maxfail/exitfirst: stop after in-flight Children drained; unlaunched
+        # Groups and in-process tests stay silent (xdist shutdown semantics).
+        return 1
 
     # Run normal tests in-process, after the pool has fully drained.
     for idx, item in enumerate(normal_items):
         nextitem = normal_items[idx + 1] if idx + 1 < len(normal_items) else None
         item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
 
-    if setup_error is None:
-        _teardown_parent_session_fixtures(session, isolated_items)
+    _teardown_parent_session_fixtures(session, isolated_items)
 
     return 1 if session.testsfailed else 0
 
