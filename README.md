@@ -214,8 +214,8 @@ pytest --isolated --isolated-numprocesses=8
 pytest --isolated --isolated-numprocesses=auto
 ```
 
-- The default (flag absent, `isolated_numprocesses` unset) is serial: results and
-  output are byte-identical to earlier releases.
+- The default (flag absent, `isolated_numprocesses` unset) is serial: Groups run
+  one at a time, with the same reporting and output policy as parallel runs.
 - Outcomes, durations, exit codes, and reporter files (JUnit XML etc.) are
   unchanged by parallelism; only the wall clock moves. Group output arrives as one
   burst when each Child finishes, so `-k`/report ordering is preserved while live
@@ -227,6 +227,11 @@ pytest --isolated --isolated-numprocesses=auto
   root and its own fresh pytest cache directory (both under the run's
   `--basetemp`, when given), so concurrent Children never race on shared state —
   while `--lf`/`--ff` inherited via `PYTEST_ADDOPTS`/`addopts` keep working.
+- With an explicit `--basetemp`, serial Children also get separate per-Group
+  temporary directories under the Parent's base. This prevents Child temporary
+  directory cleanup from deleting live Parent fixture resources. Serial Children
+  retain their shared pytest cache and last-failed policy; without an explicit
+  `--basetemp`, serial Child commands are unchanged.
 - Caution: with `-s`/`--capture=no`, Children write straight to the Parent's
   terminal (live, like plain pytest); under parallelism those streams interleave
   and a one-time warning is issued. Test outcomes and reporters stay correct.
@@ -248,23 +253,27 @@ per Group rather than per worker.
 There are two fixture worlds per run. Each Child is a fresh pytest session and
 runs the fixtures its Group's tests need — exactly what pytest has always done.
 The Parent keeps the session-scoped world: before the first Child launches it
-sets up every `scope="session"` autouse conftest fixture (plus their
-fixture dependencies), and it tears them down at loop end — so
+sets up the `scope="session"` autouse fixtures visible to the selected Isolated
+tests (plus their fixture dependencies), respecting fixture overrides and direct
+parametrization. It tears them down at loop end — so
 "start a service for the whole run" works even when every test is isolated
 ([issue #75](https://github.com/dyollb/pytest-isolated/issues/75)). Module-
 and class-scoped fixtures belong to the Child that owns those tests; the
 Parent does not run them.
 
-A session fixture that is *not* autouse but is requested by an isolated test
-runs once per Child, not once per session (fixture values cannot cross a
-process boundary). pytest-isolated warns about this; `--isolated-strict` (or
-ini `isolated_strict = true`) turns the warning into an error.
+A session fixture requested by an Isolated test that is neither autouse nor
+part of the Parent's autouse dependency stack runs only in Children (fixture
+values cannot cross a process boundary). pytest-isolated warns about this;
+`--isolated-strict` (or ini `isolated_strict = true`) turns the warning into an
+error.
 
 Parent-side setup requires **pytest >= 8** (it rides pytest 8's fixture
-internals). On pytest 7 the plugin keeps its pre-0.7 behavior — session
+internals). On pytest 7 the plugin keeps its pre-0.6.1 behavior — session
 autouse fixtures do not run in the Parent — and says so with a warning.
+The per-Child session-fixture checks, including strict errors, are also disabled
+on pytest 7.
 
-> **Upgrade note (0.7.1).** If you worked around issue #75 by copying your
+> **Upgrade note (0.6.1).** If you worked around issue #75 by copying your
 > session-fixture logic into `pytest_sessionstart`/`pytest_sessionfinish` and
 > kept the original `scope="session"` autouse fixture, both halves now run in
 > the Parent — delete one copy. If you *moved* the logic out of the fixture,

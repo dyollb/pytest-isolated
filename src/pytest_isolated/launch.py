@@ -10,7 +10,7 @@ derivation, or slot-to-directory naming.
 Ownership boundary: ``forwarding.child_args`` remains the sole owner of option
 policy (what is forwarded/blocked/parent-handled); this module owns argv
 packaging around it, plus env, cwd, the report channel, and the whole of
-parallel hardening (``open_group_temp_root`` opens the pool's temp tree,
+temporary-path isolation (``open_group_temp_root`` opens the pool's temp tree,
 ``Hardened`` names its per-slot directories). The child timeout is a
 parent-side run parameter, deliberately not part of ``LaunchSpec``.
 
@@ -60,7 +60,7 @@ class GroupTempRoot(NamedTuple):
 
 
 class Hardened(NamedTuple):
-    """Inputs of a hardened plan: the pool's temp root, and one Group's slot.
+    """Per-Group temporary paths, with cache isolation for concurrent Children.
 
     Slot-to-directory naming (``group-N`` basetemp, ``cache-N`` cache) is
     private to this module; its only interface is the argv it produces.
@@ -68,14 +68,15 @@ class Hardened(NamedTuple):
 
     root: Path
     slot: int
+    isolate_cache: bool = True
 
 
 def open_group_temp_root(config: pytest.Config) -> GroupTempRoot:
-    """Open the per-Group temp root for a concurrent pool.
+    """Open the per-Group temp root without clearing live Parent resources.
 
     Spec: https://github.com/dyollb/pytest-isolated/issues/70
 
-    Concurrent Children must not share pytest's basetemp counter. The tree
+    Children must not clear the Parent's basetemp or share its counter. The tree
     lives inside the Parent's resolved basetemp (artifacts stay together and
     pytest's retention rules apply); with the tmpdir plugin disabled there is
     no factory, so a plugin-owned temp dir cleaned at pool exit is used.
@@ -106,10 +107,10 @@ def plan_launch(
     """Plan an isolated child launch for one group. Pure: no subprocess spawn.
 
     The hardened form (spec: https://github.com/dyollb/pytest-isolated/issues/73)
-    is used only by the concurrent pool: slot N of the pool's temp root gets a
-    unique ``group-N`` basetemp and a unique ``cache-N`` cache dir, so
-    concurrent Children cannot race on pytest's shared basetemp counter or one
-    ``.pytest_cache``. The cache is redirected via the ``cache_dir`` ini
+    gives slot N a unique ``group-N`` basetemp and, for concurrent Children,
+    a unique ``cache-N`` cache dir, so concurrent Children cannot race on
+    pytest's shared basetemp counter or one ``.pytest_cache``. The cache is
+    redirected via the ``cache_dir`` ini
     (``-o``, portable since pytest 7) rather than ``-p no:cacheprovider``:
     disabling the plugin also unregisters ``--lf``/``--ff``, so those options
     inherited through ``PYTEST_ADDOPTS`` or ini ``addopts`` crashed the Child's
@@ -119,7 +120,9 @@ def plan_launch(
     selection against a fresh cache; there the Child also gets ``--lfnf all``
     (see below). All tokens are appended AFTER the forwarded args so an
     inherited ``--basetemp``/``-o``/``--lfnf`` cannot override them. Serial
-    launches pass no ``hardened`` and get the pre-parallel command unchanged.
+    launches with explicit ``--basetemp`` isolate only temporary directories,
+    keeping their shared cache and last-failed policy. Other serial launches
+    pass no ``hardened`` and get the pre-parallel command unchanged.
     """
     capture_mode = config.getoption("capture", "fd")
 
@@ -139,10 +142,18 @@ def plan_launch(
         cmd.append("--capture=tee-sys")
     # Child args and the single --rootdir come from the forwarding interface.
     cmd.extend(child_args(config))
-    # Parallel hardening, injected last so they win over forwarded duplicates.
+    # Inject last so the per-Group paths win over forwarded duplicates.
     if hardened is not None:
-        hardened_args = ["-o", f"cache_dir={hardened.root / f'cache-{hardened.slot}'}"]
-        if config.getoption("last_failed_no_failures", None) == "none":
+        hardened_args = []
+        if hardened.isolate_cache:
+            hardened_args += [
+                "-o",
+                f"cache_dir={hardened.root / f'cache-{hardened.slot}'}",
+            ]
+        if (
+            hardened.isolate_cache
+            and config.getoption("last_failed_no_failures", None) == "none"
+        ):
             # The per-Group cache starts empty, so an inherited --lf under
             # the 'none' empty-cache policy would deselect every nodeid the
             # Parent just selected from its own cache: the Child would run

@@ -13,12 +13,18 @@ environment variable, the issue's own reproducer idiom.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 from pytest import Pytester
 
 from pytest_isolated.execution import _pytest_supports_parent_fixtures
 
 CHILD_GUARD = 'os.environ.get("PYTEST_RUNNING_IN_SUBPROCESS")'
+REQUIRES_PARENT_FIXTURES = pytest.mark.skipif(
+    pytest.version_tuple[0] < 8,
+    reason="Parent session fixtures require pytest >= 8",
+)
 
 # Parent-side session autouse fixture with a dependency; each body part
 # appends a line to the Parent lifecycle log when it runs in the Parent.
@@ -60,8 +66,187 @@ def _log_lines(pytester: Pytester) -> list[str]:
     return log.read_text().splitlines() if log.exists() else []
 
 
+class TestParentFixtureCollection:
+    def test_collect_only_sets_up_nothing(self, pytester: Pytester) -> None:
+        pytester.makeconftest(_SESSION_STACK_CONFTEST)
+        pytester.makepyfile(
+            """
+import pytest
+
+
+@pytest.mark.isolated
+def test_one():
+    assert True
+"""
+        )
+
+        result = pytester.runpytest("--collect-only")
+
+        assert result.ret == 0
+        assert _log_lines(pytester) == ["sessionfinish"]
+
+
+@REQUIRES_PARENT_FIXTURES
 class TestParentSessionFixtures:
     """The Parent sets up the session-scope autouse stack before Children."""
+
+    @pytest.mark.parametrize("scope", ["function", "session"])
+    def test_direct_parameter_overrides_session_autouse(
+        self, pytester: Pytester, scope: str
+    ) -> None:
+        pytester.makeconftest(
+            """
+import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def resource():
+    pytest.fail("shadowed autouse fixture must not run")
+"""
+        )
+        pytester.makepyfile(
+            f"""
+import pytest
+
+
+@pytest.mark.isolated
+@pytest.mark.parametrize("resource", ["parameter"], scope={scope!r})
+def test_parameter(resource):
+    assert resource == "parameter"
+"""
+        )
+
+        result = pytester.runpytest("--isolated-strict")
+
+        result.assert_outcomes(passed=1)
+
+    def test_parent_dependency_uses_item_parameter(self, pytester: Pytester) -> None:
+        pytester.makeconftest(
+            """
+import pytest
+
+
+@pytest.fixture(scope="session")
+def resource():
+    pytest.fail("shadowed dependency must not run")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def service(resource):
+    assert resource == "parameter"
+"""
+        )
+        pytester.makepyfile(
+            """
+import pytest
+
+
+@pytest.mark.isolated
+@pytest.mark.parametrize("resource", ["parameter"], scope="session")
+def test_parameter(resource):
+    assert resource == "parameter"
+"""
+        )
+
+        result = pytester.runpytest("--isolated-strict")
+
+        result.assert_outcomes(passed=1)
+
+    def test_autouse_dependency_is_allowed_in_strict_mode(
+        self, pytester: Pytester
+    ) -> None:
+        pytester.makeconftest(_SESSION_STACK_CONFTEST)
+        pytester.makepyfile(
+            """
+import pytest
+
+
+@pytest.mark.isolated
+def test_one():
+    pass
+"""
+        )
+
+        result = pytester.runpytest("--isolated-strict")
+
+        result.assert_outcomes(passed=1)
+        assert _log_lines(pytester) == [
+            "helper_setup",
+            "setup",
+            "teardown",
+            "helper_teardown",
+            "sessionfinish",
+        ]
+
+    @pytest.mark.parametrize("source", ["cli", "ini", "env"])
+    def test_serial_children_preserve_parent_temporary_resources(
+        self, pytester: Pytester, monkeypatch: pytest.MonkeyPatch, source: str
+    ) -> None:
+        base = pytester.path / "shared-base"
+        resource = base / "parent-resource.txt"
+        pytester.makeconftest(
+            f"""
+import os
+from pathlib import Path
+
+import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def service(tmp_path_factory):
+    if {CHILD_GUARD}:
+        yield
+        return
+    resource = tmp_path_factory.getbasetemp() / "parent-resource.txt"
+    resource.write_text("live")
+    yield
+    assert resource.read_text() == "live"
+    Path("parent.finalized").write_text("done")
+"""
+        )
+        pytester.makepyfile(
+            f"""
+from pathlib import Path
+
+import pytest
+
+
+@pytest.mark.isolated
+def test_first_child(tmp_path, cache):
+    assert Path({str(resource)!r}).read_text() == "live"
+    Path("first-base.txt").write_text(str(tmp_path.parent))
+    cache.set("parent-fixtures/shared", "first Child")
+
+
+@pytest.mark.isolated
+def test_second_child(tmp_path_factory, cache):
+    assert Path({str(resource)!r}).read_text() == "live"
+    Path("second-base.txt").write_text(str(tmp_path_factory.getbasetemp()))
+    assert cache.get("parent-fixtures/shared", None) == "first Child"
+
+
+def test_plain(tmp_path, cache):
+    assert Path({str(resource)!r}).read_text() == "live"
+    assert cache.get("parent-fixtures/shared", None) == "first Child"
+"""
+        )
+
+        if source == "cli":
+            result = pytester.runpytest("--basetemp", str(base))
+        else:
+            option = f'--basetemp="{base}"'
+            if source == "ini":
+                pytester.makeini(f"[pytest]\naddopts = {option}\n")
+            else:
+                monkeypatch.setenv("PYTEST_ADDOPTS", option)
+            # pytester's runpytest helpers inject their own CLI basetemp.
+            result = pytester.run(sys.executable, "-m", "pytest")
+
+        result.assert_outcomes(passed=3)
+        assert (pytester.path / "parent.finalized").read_text() == "done"
+        assert (pytester.path / "first-base.txt").read_text() != (
+            pytester.path / "second-base.txt"
+        ).read_text()
 
     def test_all_isolated_session_autouse_runs_in_parent(
         self, pytester: Pytester
@@ -175,29 +360,6 @@ def test_one():
 
         assert result.ret == 0
         assert not (pytester.path / "module_in_parent.txt").exists()
-
-    def test_collect_only_sets_up_nothing(self, pytester: Pytester) -> None:
-        """The Parent session setup must stay behind the collect-only
-        short-circuit
-        (https://github.com/dyollb/pytest-isolated/issues/76)."""
-        pytester.makeconftest(_SESSION_STACK_CONFTEST)
-        pytester.makepyfile(
-            test_a="""
-import pytest
-
-
-@pytest.mark.isolated
-def test_one():
-    assert True
-"""
-        )
-
-        result = pytester.runpytest("--collect-only")
-
-        assert result.ret == 0
-        # the conftest hook itself runs (hooks are not fixtures), but the
-        # fixture stack must stay untouched: no setup/teardown lines.
-        assert _log_lines(pytester) == ["sessionfinish"]
 
     def test_parent_session_fixture_error_aborts_before_children(
         self, pytester: Pytester
@@ -482,7 +644,44 @@ class TestParentFixturePytestVersionGate:
     def test_gate_predicate(self, version: str, supported: bool) -> None:
         assert _pytest_supports_parent_fixtures(version) is supported
 
+    @pytest.mark.skipif(pytest.version_tuple[0] >= 8, reason="pytest-7 fallback")
+    @pytest.mark.parametrize("strict_source", ["flag", "ini"])
+    def test_pytest7_warns_and_keeps_children_running(
+        self, pytester: Pytester, strict_source: str
+    ) -> None:
+        pytester.makeconftest(_SESSION_STACK_CONFTEST)
+        pytester.makepyfile(
+            """
+import pytest
 
+
+@pytest.fixture(scope="session")
+def per_child():
+    return "value"
+
+
+@pytest.mark.isolated
+def test_one(per_child):
+    assert per_child == "value"
+"""
+        )
+        args = []
+        if strict_source == "ini":
+            pytester.makeini("[pytest]\nisolated_strict = true\n")
+        else:
+            args.append("--isolated-strict")
+
+        result = pytester.runpytest_subprocess(*args)
+
+        result.assert_outcomes(passed=1)
+        assert _log_lines(pytester) == ["sessionfinish"]
+        output = result.stdout.str() + result.stderr.str()
+        assert "requires pytest>=8" in output
+        assert "once per Child" not in output
+        assert "INTERNALERROR" not in output
+
+
+@REQUIRES_PARENT_FIXTURES
 class TestParentFixtureFinalizerOutcomes:
     """Finalizer errors during the loop-end teardown drain are reported."""
 
@@ -528,6 +727,7 @@ def test_one():
         assert "INTERNALERROR" not in result.stdout.str() + result.stderr.str()
 
 
+@REQUIRES_PARENT_FIXTURES
 class TestParentSessionFixtureStrictness:
     """Non-autouse session fixtures requested by Isolated tests run once per
     Child; the strict knob surfaces that instead of leaving it silent."""
@@ -545,6 +745,87 @@ def per_child():
 def test_one(per_child):
     assert per_child == "value"
 """
+
+    @pytest.mark.parametrize("strict", [False, True])
+    def test_direct_parameter_does_not_warn(
+        self, pytester: Pytester, strict: bool
+    ) -> None:
+        pytester.makeconftest(
+            """
+import pytest
+
+
+@pytest.fixture(scope="session")
+def resource():
+    pytest.fail("shadowed session fixture must not run")
+"""
+        )
+        pytester.makepyfile(
+            """
+import pytest
+
+
+@pytest.mark.isolated
+@pytest.mark.parametrize("resource", ["parameter"])
+def test_parameter(resource):
+    assert resource == "parameter"
+"""
+        )
+
+        result = pytester.runpytest_subprocess(
+            *(["--isolated-strict"] if strict else [])
+        )
+
+        result.assert_outcomes(passed=1)
+        assert "once per Child" not in result.stdout.str() + result.stderr.str()
+
+    @pytest.mark.parametrize("parameter_first", [False, True])
+    @pytest.mark.parametrize("strict", [False, True])
+    def test_parameter_does_not_hide_another_items_session_fixture(
+        self, pytester: Pytester, parameter_first: bool, strict: bool
+    ) -> None:
+        pytester.makeconftest(
+            """
+import pytest
+
+
+@pytest.fixture(scope="session")
+def resource():
+    return "session"
+"""
+        )
+        parameter = """
+import pytest
+
+
+@pytest.mark.isolated
+@pytest.mark.parametrize("resource", ["parameter"])
+def test_parameter(resource):
+    assert resource == "parameter"
+"""
+        session = """
+import pytest
+
+
+@pytest.mark.isolated
+def test_session(resource):
+    assert resource == "session"
+"""
+        pytester.makepyfile(
+            test_a=parameter if parameter_first else session,
+            test_b=session if parameter_first else parameter,
+        )
+
+        result = pytester.runpytest_subprocess(
+            *(["--isolated-strict"] if strict else [])
+        )
+
+        output = result.stdout.str() + result.stderr.str()
+        assert "once per Child" in output
+        if strict:
+            assert result.ret == pytest.ExitCode.USAGE_ERROR
+        else:
+            result.assert_outcomes(passed=2)
 
     def test_warns_by_default(self, pytester: Pytester) -> None:
         pytester.makepyfile(test_a=self._NONAUTOUSE_TEST)

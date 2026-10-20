@@ -9,12 +9,12 @@ import sys
 import time
 import warnings
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Final, Literal, NamedTuple, TypeAlias, cast
 
 import pytest
-from _pytest.fixtures import FixtureDef, FixtureRequest, Scope
+from _pytest.fixtures import FixtureDef, FixtureRequest, FuncFixtureInfo, Scope
 from _pytest.nodes import Node
 from _pytest.outcomes import Exit, Skipped, XFailed
 
@@ -87,6 +87,21 @@ def _pytest_supports_parent_fixtures(version: str) -> bool:
         return True
 
 
+def _item_fixture_defs(
+    item: pytest.Item,
+) -> dict[str, Sequence[FixtureDef[Any]]]:
+    fixture_info: FuncFixtureInfo | None = getattr(item, "_fixtureinfo", None)
+    return fixture_info.name2fixturedefs if fixture_info is not None else {}
+
+
+def _effective_fixture_def(item: pytest.Item, name: str) -> FixtureDef[Any] | None:
+    # Direct parameters override fixtures in the Item's map, not the manager.
+    fixture_defs = _item_fixture_defs(item).get(name)
+    if fixture_defs is None:
+        fixture_defs = item.session._fixturemanager.getfixturedefs(name, item)
+    return fixture_defs[-1] if fixture_defs else None
+
+
 class _SessionAnchoredRequest(FixtureRequest):
     """A FixtureRequest whose node is the Session.
 
@@ -100,7 +115,7 @@ class _SessionAnchoredRequest(FixtureRequest):
         super().__init__(
             pyfuncitem=cast("Any", pyfuncitem),
             fixturename=None,
-            arg2fixturedefs={},
+            arg2fixturedefs=_item_fixture_defs(pyfuncitem).copy(),
             fixture_defs={},
             _ispytest=True,
         )
@@ -169,10 +184,9 @@ def _setup_parent_session_fixtures(
     done: set[int] = set()
     for item in items:
         for name in get_autousenames(item):
-            fixture_defs = fixture_manager.getfixturedefs(name, item)
-            if not fixture_defs:
+            fixture_def = _effective_fixture_def(item, name)
+            if fixture_def is None:
                 continue
-            fixture_def = fixture_defs[-1]
             if fixture_def._scope is not Scope.Session or id(fixture_def) in done:
                 continue
             done.add(id(fixture_def))
@@ -203,15 +217,13 @@ def _check_per_child_session_fixtures(
     strict = bool(config.getoption("isolated_strict", False)) or bool(
         config.getini("isolated_strict")
     )
-    fixture_manager = session._fixturemanager
     seen: set[int] = set()
     names: list[str] = []
     for item in items:
         for name in getattr(item, "fixturenames", ()):  # pragma: no branch
-            fixture_defs = fixture_manager.getfixturedefs(name, item)
-            if not fixture_defs:
+            fixture_def = _effective_fixture_def(item, name)
+            if fixture_def is None:
                 continue
-            fixture_def = fixture_defs[-1]
             # Deduplicate per effective FixtureDef, not per name: the same
             # name may resolve to different fixtures for different Items.
             if id(fixture_def) in seen:
@@ -845,8 +857,9 @@ def _run_group_pool(
     """Run every Group through the Child Pool; True if maxfail tripped.
 
     One loop serves both modes: ``max_parallel == 1`` degenerates to the
-    historical serial order (identical Launch plans, one Child alive at a
-    time). Ctrl-C kills all live Children, reports their Groups as
+    historical serial order (one Child alive at a time). Explicit basetemps
+    get per-Group directories even in serial runs to protect Parent resources.
+    Ctrl-C kills all live Children, reports their Groups as
     Interrupted, and re-raises for pytest's normal interrupted-exit path.
     """
     pending = list(groups)
@@ -877,7 +890,7 @@ def _run_group_pool(
         if _maxfail_tripped(session):
             tripped = True
 
-    if max_parallel > 1:
+    if max_parallel > 1 or config.getoption("basetemp", None) is not None:
         temp_root = open_group_temp_root(config)
     try:
         while pending or running or finalizing:
@@ -895,13 +908,16 @@ def _run_group_pool(
                 nodeids = [it.nodeid for it in groups[name]]
                 group_timeout = group_timeouts.get(name) or default_timeout
                 if temp_root is not None:
-                    # Parallel runs launch from the pool's temp root; the
-                    # Launch plan owns the slot's directory naming and the
-                    # fresh-cache semantics (see plan_launch).
+                    # The Launch plan owns directory naming; only concurrent
+                    # Children need separate caches.
                     spec = plan_launch(
                         config,
                         nodeids,
-                        hardened=Hardened(root=temp_root.root, slot=slot),
+                        hardened=Hardened(
+                            root=temp_root.root,
+                            slot=slot,
+                            isolate_cache=max_parallel > 1,
+                        ),
                     )
                     slot += 1
                 else:

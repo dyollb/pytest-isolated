@@ -44,8 +44,9 @@ _Avoid_: shared fixtures (nothing is shared), global setup
 
 **Launch plan**:
 The complete description of what one Child is told: its command line (with the
-root directory stated exactly once, and — when the Group runs in a Group Pool
-— a private basetemp and cache dir named after the Group's slot in the Pool),
+root directory stated exactly once, a private per-Group basetemp for concurrent
+Children or an explicit Parent basetemp, and a private cache dir for concurrent
+Children),
 environment, working directory (derived exactly once, a separate fact from the
 stated one — the two can never disagree), and Report channel. Fresh plan per
 Group.
