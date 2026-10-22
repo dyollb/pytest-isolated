@@ -254,8 +254,13 @@ There are two fixture worlds per run. Each Child is a fresh pytest session and
 runs the fixtures its Group's tests need — exactly what pytest has always done.
 The Parent keeps the session-scoped world: before the first Child launches it
 sets up the `scope="session"` autouse fixtures visible to the selected Isolated
-tests (plus their fixture dependencies), respecting fixture overrides and direct
-parametrization. It tears them down at loop end — so
+tests, requesting them through each test's own fixture closure so overrides,
+direct parametrization, and `parametrize(..., scope=...)` scope changes resolve
+per Item — a fixture narrowed below session stays with the Children, one
+widened to session is set up in the Parent. Tests that never reach fixture
+setup (`skip`/`skipif`, `xfail(run=False)`) are left out entirely. It tears
+them down at loop end — including runs cut short by `--maxfail`/`--exitfirst`,
+where unlaunched Groups stay silent — so
 "start a service for the whole run" works even when every test is isolated
 ([issue #75](https://github.com/dyollb/pytest-isolated/issues/75)). Module-
 and class-scoped fixtures belong to the Child that owns those tests; the
@@ -263,9 +268,10 @@ Parent does not run them.
 
 A session fixture requested by an Isolated test that is neither autouse nor
 part of the Parent's autouse dependency stack runs only in Children (fixture
-values cannot cross a process boundary). pytest-isolated warns about this;
-`--isolated-strict` (or ini `isolated_strict = true`) turns the warning into an
-error.
+values cannot cross a process boundary). pytest-isolated warns about this; the
+warning goes through pytest's warning handling, so `filterwarnings` can
+suppress or escalate it, and `--isolated-strict` (or ini
+`isolated_strict = true`) turns it into an error.
 
 Parent-side setup requires **pytest >= 8** (it rides pytest 8's fixture
 internals). On pytest 7 the plugin keeps its pre-0.6.1 behavior — session

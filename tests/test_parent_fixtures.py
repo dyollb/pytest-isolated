@@ -13,12 +13,17 @@ environment variable, the issue's own reproducer idiom.
 
 from __future__ import annotations
 
+import dataclasses
+import inspect
 import sys
 
 import pytest
+from _pytest import runner, skipping
+from _pytest.fixtures import FixtureManager, FixtureRequest
+from _pytest.python import CallSpec2
 from pytest import Pytester
 
-from pytest_isolated.execution import _pytest_supports_parent_fixtures
+from pytest_isolated.parent_fixtures import _pytest_supports_parent_fixtures
 
 CHILD_GUARD = 'os.environ.get("PYTEST_RUNNING_IN_SUBPROCESS")'
 REQUIRES_PARENT_FIXTURES = pytest.mark.skipif(
@@ -64,6 +69,32 @@ def pytest_sessionfinish(session):
 def _log_lines(pytester: Pytester) -> list[str]:
     log = pytester.path / "lifecycle.log"
     return log.read_text().splitlines() if log.exists() else []
+
+
+# Session fixture requested only by tests that skip before fixture setup.
+_SKIPPED_ONLY_CONFTEST = f"""
+import os
+import pathlib
+
+import pytest
+
+
+def _log(name):
+    if not {CHILD_GUARD}:
+        with pathlib.Path("lifecycle.log").open("a") as f:
+            f.write(name + "\\n")
+
+
+@pytest.fixture(scope="session")
+def only_for_skipped():
+    _log("setup")
+    yield "value"
+    _log("teardown")
+
+
+def pytest_sessionfinish(session):
+    _log("sessionfinish")
+"""
 
 
 class TestParentFixtureCollection:
@@ -624,6 +655,189 @@ def test_one():
         assert "1 skipped" in result.stdout.str()
         assert "no reason" in result.stdout.str().lower()
 
+    def test_callspec_narrowed_autouse_not_set_up_in_parent(
+        self, pytester: Pytester
+    ) -> None:
+        """parametrize(scope="function") narrows a session autouse fixture
+        below session for the Item, so the Parent must leave it to the
+        Children's per-Item setup. Setting it up from the Parent anchors a
+        function-scope finalizer off the Parent's stack, which trips an
+        assert in pytest's runner and aborts a valid suite."""
+        pytester.makeconftest(
+            f"""
+import os
+import pathlib
+
+import pytest
+
+
+def _log(name):
+    if not {CHILD_GUARD}:
+        with pathlib.Path("lifecycle.log").open("a") as f:
+            f.write(name + "\\n")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def narrowed():
+    _log("setup")
+    yield "value"
+    _log("teardown")
+
+
+def pytest_sessionfinish(session):
+    _log("sessionfinish")
+"""
+        )
+        pytester.makepyfile(
+            test_narrow="""
+import pytest
+
+
+@pytest.mark.isolated
+@pytest.mark.parametrize(
+    "narrowed", [1, 2], indirect=True, scope="function"
+)
+def test_narrow(narrowed):
+    assert narrowed == "value"
+"""
+        )
+
+        result = pytester.runpytest()
+
+        result.assert_outcomes(passed=2)
+        assert _log_lines(pytester) == ["sessionfinish"]
+
+    def test_subdirectory_override_dependencies_warmed_per_item(
+        self, pytester: Pytester
+    ) -> None:
+        """A subdirectory override of a session autouse fixture is a
+        different fixture for those Items and must be set up -- with its
+        dependencies resolved against each Item's own closure -- even when
+        the base definition was already warm for other Items."""
+        pytester.makeconftest(
+            f"""
+import os
+import pathlib
+
+import pytest
+
+
+def _log(name):
+    if not {CHILD_GUARD}:
+        with pathlib.Path("lifecycle.log").open("a") as f:
+            f.write(name + "\\n")
+
+
+@pytest.fixture(scope="session")
+def dep():
+    _log("dep_setup")
+    yield "dep"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def base():
+    _log("base_setup")
+    yield "base"
+
+
+def pytest_sessionfinish(session):
+    _log("sessionfinish")
+"""
+        )
+        pytester.makepyfile(
+            **{
+                "sub/conftest": f"""
+import os
+import pathlib
+
+import pytest
+
+
+def _log(name):
+    if not {CHILD_GUARD}:
+        with pathlib.Path("lifecycle.log").open("a") as f:
+            f.write(name + "\\n")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def base(base, dep):
+    assert base == "base"
+    assert dep == "dep"
+    _log("sub_base_setup")
+    yield "sub"
+""",
+                "sub/test_sub": """
+import pytest
+
+
+@pytest.mark.isolated
+def test_sub():
+    assert True
+""",
+            }
+        )
+        pytester.makepyfile(
+            test_root="""
+import pytest
+
+
+@pytest.mark.isolated
+def test_root():
+    assert True
+"""
+        )
+
+        result = pytester.runpytest()
+
+        result.assert_outcomes(passed=2)
+        # the override runs in the Parent too, resolving its own-name
+        # dependency to the warm base definition instead of re-running it
+        assert set(_log_lines(pytester)) == {
+            "base_setup",
+            "sub_base_setup",
+            "dep_setup",
+            "sessionfinish",
+        }
+
+    @pytest.mark.parametrize("marker", ["skip", "xfail"])
+    def test_pre_skipped_items_never_set_up(
+        self, pytester: Pytester, marker: str
+    ) -> None:
+        """Skipped and xfail(run=False) Items fail out of
+        pytest_runtest_setup before any fixture runs, so the Parent must
+        not set their session fixtures up either."""
+        mark = (
+            "@pytest.mark.skip" if marker == "skip" else "@pytest.mark.xfail(run=False)"
+        )
+        pytester.makeconftest(_SKIPPED_ONLY_CONFTEST)
+        pytester.makepyfile(
+            test_never=f"""
+import pytest
+
+
+@pytest.mark.isolated
+{mark}
+def test_never_runs(only_for_skipped):
+    assert only_for_skipped == "value"
+""",
+            test_live="""
+import pytest
+
+
+@pytest.mark.isolated
+def test_live():
+    assert True
+""",
+        )
+
+        result = pytester.runpytest()
+
+        if marker == "skip":
+            result.assert_outcomes(passed=1, skipped=1)
+        else:
+            result.assert_outcomes(passed=1, xfailed=1)
+        assert _log_lines(pytester) == ["sessionfinish"]
+
 
 class TestParentFixturePytestVersionGate:
     """The Parent fixture mechanism needs pytest>=8 fixture internals; on
@@ -725,6 +939,49 @@ def test_one():
         assert result.ret != 0
         assert "teardown boom" in result.stdout.str() + result.stderr.str()
         assert "INTERNALERROR" not in result.stdout.str() + result.stderr.str()
+
+
+@REQUIRES_PARENT_FIXTURES
+class TestParentFixtureDrainOnExitFirst:
+    """--maxfail aborts the loop mid-pool: Parent finalizers must still
+    drain before pytest_sessionfinish, while unlaunched Groups stay
+    silent (xdist shutdown semantics)."""
+
+    def test_teardown_drains_before_sessionfinish_on_maxfail(
+        self, pytester: Pytester
+    ) -> None:
+        pytester.makeconftest(_SESSION_STACK_CONFTEST)
+        pytester.makepyfile(
+            test_a="""
+import pytest
+
+
+@pytest.mark.isolated(group="a")
+def test_fails():
+    raise RuntimeError("boom")
+""",
+            test_b="""
+import pytest
+
+
+@pytest.mark.isolated(group="b")
+def test_passes():
+    assert True
+""",
+        )
+
+        result = pytester.runpytest("--maxfail=1")
+
+        assert result.ret == pytest.ExitCode.TESTS_FAILED
+        # Group b never launches and reports nothing
+        result.assert_outcomes(failed=1)
+        assert _log_lines(pytester) == [
+            "helper_setup",
+            "setup",
+            "teardown",
+            "helper_teardown",
+            "sessionfinish",
+        ]
 
 
 @REQUIRES_PARENT_FIXTURES
@@ -835,8 +1092,196 @@ def test_session(resource):
         result = pytester.runpytest_subprocess()
 
         assert result.ret == 0
-        # session-level warnings bypass per-item capture: they land on stderr
-        assert "once per Child" in result.stderr.str()
+        # routed through pytest's config-warning pipeline so it honors
+        # filterwarnings, which reports it in the stdout warnings summary
+        assert "once per Child" in result.stdout.str()
+
+    def test_warning_suppressed_by_filterwarnings(self, pytester: Pytester) -> None:
+        """The warning goes through pytest's warning machinery, so an
+        explicit filter can suppress it."""
+        pytester.makepyfile(test_a=self._NONAUTOUSE_TEST)
+        pytester.makeini("[pytest]\nfilterwarnings = ignore::UserWarning\n")
+
+        result = pytester.runpytest_subprocess()
+
+        result.assert_outcomes(passed=1)
+        assert "once per Child" not in result.stdout.str() + result.stderr.str()
+
+    def test_filterwarnings_error_promotes_warning_to_usage_error(
+        self, pytester: Pytester
+    ) -> None:
+        """filterwarnings=error escalates the warning to the same usage
+        error --isolated-strict raises, not an INTERNALERROR."""
+        pytester.makepyfile(test_a=self._NONAUTOUSE_TEST)
+        pytester.makeini("[pytest]\nfilterwarnings = error::UserWarning\n")
+
+        result = pytester.runpytest_subprocess()
+
+        assert result.ret == pytest.ExitCode.USAGE_ERROR
+        output = result.stdout.str() + result.stderr.str()
+        assert "once per Child" in output
+        assert "INTERNALERROR" not in output
+
+    def test_callspec_widened_fixture_flagged(self, pytester: Pytester) -> None:
+        """parametrize(scope="session") turns a function fixture into a
+        session fixture for the Item: once-per-Child trap applies."""
+        pytester.makepyfile(
+            test_a="""
+import pytest
+
+
+@pytest.fixture
+def widened():
+    yield "value"
+
+
+@pytest.mark.isolated
+@pytest.mark.parametrize("widened", [None], indirect=True, scope="session")
+def test_one(widened):
+    assert widened == "value"
+"""
+        )
+
+        result = pytester.runpytest_subprocess("--isolated-strict")
+
+        assert result.ret == pytest.ExitCode.USAGE_ERROR
+        assert "once per Child" in result.stdout.str() + result.stderr.str()
+
+    def test_callspec_narrowed_fixture_not_flagged(self, pytester: Pytester) -> None:
+        """parametrize(scope="function") narrows a session fixture to
+        per-function runs: the once-per-Child message does not apply."""
+        pytester.makepyfile(
+            test_a="""
+import pytest
+
+
+@pytest.fixture(scope="session")
+def narrowed():
+    yield "value"
+
+
+@pytest.mark.isolated
+@pytest.mark.parametrize("narrowed", [1, 2], indirect=True, scope="function")
+def test_one(narrowed):
+    assert narrowed == "value"
+"""
+        )
+
+        result = pytester.runpytest_subprocess("--isolated-strict")
+
+        result.assert_outcomes(passed=2)
+        assert "once per Child" not in result.stdout.str() + result.stderr.str()
+
+    def test_wrapper_shadowing_hides_a_cold_session_base(
+        self, pytester: Pytester
+    ) -> None:
+        """A function wrapper that requests its own name chains to the
+        session base below it, so the cold base really does run once per
+        Child and must be flagged."""
+        pytester.makeconftest(
+            """
+import pytest
+
+
+@pytest.fixture(scope="session")
+def resource():
+    yield "session"
+"""
+        )
+        pytester.makepyfile(
+            test_a="""
+import pytest
+
+
+@pytest.fixture
+def resource(resource):
+    return resource + "/wrapper"
+
+
+@pytest.mark.isolated
+def test_wrapped(resource):
+    assert resource == "session/wrapper"
+"""
+        )
+
+        result = pytester.runpytest_subprocess("--isolated-strict")
+
+        assert result.ret == pytest.ExitCode.USAGE_ERROR
+        assert "once per Child" in result.stdout.str() + result.stderr.str()
+
+    def test_unused_shadowed_override_not_flagged(self, pytester: Pytester) -> None:
+        """An override that never requests its own name leaves the session
+        definition below it dead for these Items: nothing runs per Child."""
+        pytester.makeconftest(
+            """
+import pytest
+
+
+@pytest.fixture(scope="session")
+def resource():
+    yield "session"
+"""
+        )
+        pytester.makepyfile(
+            test_a="""
+import pytest
+
+
+@pytest.fixture
+def resource():
+    return "shadow"
+
+
+@pytest.mark.isolated
+def test_shadow(resource):
+    assert resource == "shadow"
+"""
+        )
+
+        result = pytester.runpytest_subprocess("--isolated-strict")
+
+        result.assert_outcomes(passed=1)
+        assert "once per Child" not in result.stdout.str() + result.stderr.str()
+
+    @pytest.mark.parametrize("marker", ["skip", "xfail"])
+    def test_pre_skipped_items_do_not_trigger_strict_error(
+        self, pytester: Pytester, marker: str
+    ) -> None:
+        """Items pytest skips before fixture setup never run their fixtures
+        anywhere, so their session fixtures are not a once-per-Child trap."""
+        mark = (
+            "@pytest.mark.skip" if marker == "skip" else "@pytest.mark.xfail(run=False)"
+        )
+        pytester.makepyfile(
+            test_never=f"""
+import pytest
+
+
+@pytest.fixture(scope="session")
+def only_for_skipped():
+    yield "value"
+
+
+@pytest.mark.isolated
+{mark}
+def test_never_runs(only_for_skipped):
+    assert only_for_skipped == "value"
+""",
+            test_live="""
+import pytest
+
+
+@pytest.mark.isolated
+def test_live():
+    assert True
+""",
+        )
+
+        result = pytester.runpytest("--isolated-strict")
+
+        assert result.ret == 0
+        assert "once per Child" not in result.stdout.str() + result.stderr.str()
+        assert "INTERNALERROR" not in result.stdout.str() + result.stderr.str()
 
     def test_strict_flag_promotes_warning_to_error(self, pytester: Pytester) -> None:
         pytester.makepyfile(test_a=self._NONAUTOUSE_TEST)
@@ -890,3 +1335,39 @@ def test_uses_session(resource):
 
         assert result.ret != 0
         assert "once per Child" in result.stdout.str() + result.stderr.str()
+
+
+@REQUIRES_PARENT_FIXTURES
+class TestPytestInternalsPresence:
+    """Pin the private pytest surface ``parent_fixtures`` resolves at
+    runtime. The module degrades to the pre-#75 behavior when a symbol
+    moves, and the version gate only covers major versions, so these
+    checks make internals drift fail the suite on a pytest upgrade
+    instead of silently disabling the feature in the field."""
+
+    def test_fixture_manager_lookups(self) -> None:
+        assert hasattr(FixtureManager, "getfixturedefs")
+        assert hasattr(FixtureManager, "_getautousenames")
+
+    def test_skipping_helpers(self) -> None:
+        assert hasattr(skipping, "evaluate_skip_marks")
+        assert hasattr(skipping, "evaluate_xfail_marks")
+
+    def test_fixture_request_constructor(self) -> None:
+        parameters = inspect.signature(FixtureRequest.__init__).parameters
+        assert {
+            "pyfuncitem",
+            "fixturename",
+            "arg2fixturedefs",
+            "fixture_defs",
+            "_ispytest",
+        } <= set(parameters)
+
+    def test_callspec_scope_override_field(self) -> None:
+        assert "_arg2scope" in {field.name for field in dataclasses.fields(CallSpec2)}
+
+    def test_setup_state_rejects_off_stack_finalizers(self) -> None:
+        """The effective-scope filter exists because SetupState asserts on
+        finalizers whose node is off the stack; if that assert ever goes
+        away, the filter's rationale needs revisiting."""
+        assert "assert" in inspect.getsource(runner.SetupState.addfinalizer)
