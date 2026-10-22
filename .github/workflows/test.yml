@@ -34,3 +34,25 @@ jobs:
 
     - name: Run tests
       run: pytest tests/ -v
+
+  pytest-compatibility:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pytest: ["7.4.4", "8.4.2", "9.0.2"]
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v7
+      with:
+        python-version: "3.11"
+
+    - name: Install compatibility dependencies
+      run: pip install -e . "pytest==${{ matrix.pytest }}" pytest-timeout pytest-forked
+
+    - name: Run fixture and launch compatibility tests
+      run: >-
+        pytest tests/test_parent_fixtures.py tests/test_launch_plan.py
+        tests/test_parallelism.py tests/test_pool_units.py -v

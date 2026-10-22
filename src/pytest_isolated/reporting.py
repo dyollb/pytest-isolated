@@ -117,7 +117,7 @@ def _emit_report(
     *,
     when: Literal["setup", "call", "teardown"],
     outcome: Literal["passed", "failed", "skipped"],
-    longrepr: str = "",
+    longrepr: Any = "",
     duration: float = 0.0,
     stdout: str = "",
     stderr: str = "",
@@ -134,7 +134,7 @@ def _emit_report(
     if user_properties:
         rep.user_properties = user_properties
 
-    if wasxfail:
+    if wasxfail is not None:
         rep.wasxfail = wasxfail
 
     # For skipped tests, longrepr needs to be a tuple (path, lineno, reason)
