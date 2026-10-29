@@ -64,6 +64,9 @@ isolated = "pytest_isolated.plugin"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --strict-markers"
+# tests/conftest.py's 'application' fixture is a per-Child singleton on
+# purpose, so the once-per-Child session-fixture notice does not apply here.
+filterwarnings = ["ignore:pytest-isolated. session-scoped fixture.*:UserWarning"]
 # Plugin configuration options (examples)
 # isolated_timeout = "300"
 
