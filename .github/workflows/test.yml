@@ -54,5 +54,5 @@ jobs:
 
     - name: Run fixture and launch compatibility tests
       run: >-
-        pytest tests/test_parent_fixtures.py tests/test_launch_plan.py
+        pytest tests/test_shared_fixtures.py tests/test_launch_plan.py
         tests/test_parallelism.py tests/test_pool_units.py -v

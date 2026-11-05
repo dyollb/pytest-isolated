@@ -33,21 +33,21 @@ The maximum run time one Group's Child gets (marker > CLI/ini default). A
 Parent-side run parameter on the Group, deliberately not part of what the Child
 is told.
 
-**Parent Session Fixtures**:
-The session-scoped autouse fixture stack the Parent sets up itself before the
-first Child launches and tears down at loop end, so session setup works even
-when every Item runs in a Child. Children keep their own fixture stack; no
-fixture value crosses the process boundary.
-_Avoid_: shared fixtures (nothing is shared), global setup
+**Shared Fixture**:
+A session-scoped fixture opted in with `@pytest_isolated.shared` (or the
+`isolated_shared_fixtures` ini) that the Parent sets up once, before the first
+Child launches, and tears down at loop end. Children receive its JSON value
+and never run its body. Other session fixtures run once per Child.
+_Avoid_: parent fixtures, global setup (sharing is per definition and opt-in)
 
 ### The child's interface
 
 **Launch plan**:
 The complete description of what one Child is told: its command line (with the
 root directory stated exactly once, a private per-Group basetemp for concurrent
-Children or an explicit Parent basetemp, and a private cache dir for concurrent
-Children),
-environment, working directory (derived exactly once, a separate fact from the
+Children or for an explicit Parent basetemp under Shared Fixtures, and a
+private cache dir for concurrent Children),
+environment (including where the Shared Fixture values are), working directory (derived exactly once, a separate fact from the
 stated one — the two can never disagree), and Report channel. Fresh plan per
 Group.
 _Avoid_: launch command, spawn setup

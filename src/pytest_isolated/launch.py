@@ -28,7 +28,7 @@ from typing import Final, NamedTuple
 
 import pytest
 
-from .config import SUBPROC_ENV, SUBPROC_REPORT_PATH
+from .config import SHARED_PAYLOAD_ENV, SUBPROC_ENV, SUBPROC_REPORT_PATH
 from .forwarding import child_args
 
 _BASE_CMD: Final = [sys.executable, "-u", "-m", "pytest"]
@@ -103,6 +103,7 @@ def plan_launch(
     nodeids: list[str],
     *,
     hardened: Hardened | None = None,
+    shared_payload: Path | None = None,
 ) -> LaunchSpec:
     """Plan an isolated child launch for one group. Pure: no subprocess spawn.
 
@@ -120,9 +121,10 @@ def plan_launch(
     selection against a fresh cache; there the Child also gets ``--lfnf all``
     (see below). All tokens are appended AFTER the forwarded args so an
     inherited ``--basetemp``/``-o``/``--lfnf`` cannot override them. Serial
-    launches with explicit ``--basetemp`` isolate only temporary directories,
-    keeping their shared cache and last-failed policy. Other serial launches
-    pass no ``hardened`` and get the pre-parallel command unchanged.
+    launches with Shared Fixtures and an explicit ``--basetemp`` isolate only
+    temporary directories, keeping their shared cache and last-failed policy.
+    Other serial launches pass no ``hardened`` and get the pre-parallel
+    command unchanged.
     """
     capture_mode = config.getoption("capture", "fd")
 
@@ -177,10 +179,12 @@ def plan_launch(
         report_path = tf.name
 
     # The child env is the parent's (PYTEST_ADDOPTS included, by inheritance
-    # only — no re-emission) plus the two plugin subprocess variables.
+    # only — no re-emission) plus the plugin subprocess variables.
     env = os.environ.copy()
     env[SUBPROC_ENV] = "1"
     env[SUBPROC_REPORT_PATH] = report_path
+    if shared_payload is not None:
+        env[SHARED_PAYLOAD_ENV] = str(shared_payload)
 
     # Use rootpath if set, otherwise the invocation directory. This ensures
     # nodeids (which are relative to rootpath) can be resolved in the child.

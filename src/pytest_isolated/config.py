@@ -13,6 +13,9 @@ SUBPROC_ENV: Final = "PYTEST_RUNNING_IN_SUBPROCESS"
 # Parent tells child where to write JSONL records per test call
 SUBPROC_REPORT_PATH: Final = "PYTEST_SUBPROCESS_REPORT_PATH"
 
+# Parent tells Children where the Shared Fixture values are
+SHARED_PAYLOAD_ENV: Final = "PYTEST_ISOLATED_SHARED_FIXTURES"
+
 # Default timeout for isolated test groups (seconds)
 DEFAULT_TIMEOUT: Final = 300
 
@@ -55,16 +58,6 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "Analogous to pytest-xdist's -n/--numprocesses."
         ),
     )
-    group.addoption(
-        "--isolated-strict",
-        action="store_true",
-        default=False,
-        help=(
-            "Promote pytest-isolated Parent/Child contract warnings to errors "
-            "(currently: a session-scoped fixture requested by Isolated tests "
-            "runs once per Child, not once per session)."
-        ),
-    )
     parser.addini(
         "isolated_timeout",
         type="string",
@@ -81,12 +74,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         ),
     )
     parser.addini(
-        "isolated_strict",
-        type="bool",
-        default=False,
+        "isolated_shared_fixtures",
+        type="args",
+        default=[],
         help=(
-            "Default for --isolated-strict: promote pytest-isolated "
-            "Parent/Child contract warnings to errors."
+            "Names of session-scoped fixtures to set up once in the Parent "
+            "and share (as JSON values) with every Child, like "
+            "@pytest_isolated.shared."
         ),
     )
 

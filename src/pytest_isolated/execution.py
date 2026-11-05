@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Final, Literal, NamedTuple, TypeAlias, cast
 
 import pytest
-from _pytest.outcomes import Exit
 
 from .config import (
     CONFIG_ATTR_GROUP_SERIAL,
@@ -28,14 +27,6 @@ from .launch import (
     LaunchSpec,
     open_group_temp_root,
     plan_launch,
-)
-from .parent_fixtures import (
-    _PARENT_FIXTURES_PYTEST_VERSION_WARNING,
-    _check_per_child_session_fixtures,
-    _pytest_supports_parent_fixtures,
-    _report_parent_fixture_outcome,
-    _setup_parent_session_fixtures,
-    _teardown_parent_session_fixtures,
 )
 from .pool import (
     EscalateToKill,
@@ -56,6 +47,7 @@ from .reporting import (
     _get_xfail_reason,
     _TestRecord,
 )
+from .shared_fixtures import setup_shared_fixtures, teardown_shared_fixtures
 
 # Type aliases for clarity
 Phase: TypeAlias = Literal["setup", "call", "teardown"]
@@ -424,54 +416,28 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
 
     isolated_items = [it for group_items in groups.values() for it in group_items]
 
-    # The Parent owns the session fixture stack; Children keep their own
-    # (a separate process cannot share fixture values). A setup error aborts
-    # the whole run before any Child launches or any normal Item runs, and
-    # teardown of partial setup rides pytest's session-end drain like any
-    # other stock error path
-    # (https://github.com/dyollb/pytest-isolated/issues/77).
-    # On pytest 7 the mechanism is unavailable (fixture internals differ);
-    # those runs keep the pre-#75 behavior, loudly warned.
-    parent_fixtures_ok = _pytest_supports_parent_fixtures(pytest.__version__)
+    # Shared Fixtures run once here, before the first Child, and reach the
+    # Children as values (spec: https://github.com/dyollb/pytest-isolated/issues/75).
+    # Without any, nothing is set up in the Parent and every session fixture
+    # runs per process, as in pytest-xdist.
+    shared_payload = setup_shared_fixtures(session, isolated_items)
 
-    setup_error: pytest.ExceptionInfo[BaseException] | None = None
-    if parent_fixtures_ok:
-        try:
-            _setup_parent_session_fixtures(session, isolated_items)
-        except (KeyboardInterrupt, Exit):
-            raise
-        except BaseException:
-            setup_error = pytest.ExceptionInfo.from_current()
-    else:
-        config.issue_config_time_warning(
-            UserWarning(
-                _PARENT_FIXTURES_PYTEST_VERSION_WARNING.format(
-                    version=pytest.__version__
-                )
-            ),
-            stacklevel=1,
+    try:
+        tripped = _run_group_pool(
+            session=session,
+            config=config,
+            ctx=ctx,
+            groups=groups,
+            group_timeouts=group_timeouts,
+            default_timeout=default_timeout,
+            serial_groups=serial_groups,
+            max_parallel=max_parallel,
+            capture_output=capture_output,
+            shared_payload=shared_payload,
         )
-
-    if setup_error is not None:
-        _report_parent_fixture_outcome(
-            session, isolated_items, setup_error, when="setup"
-        )
-        return 1
-
-    if parent_fixtures_ok:
-        _check_per_child_session_fixtures(session, isolated_items)
-
-    tripped = _run_group_pool(
-        session=session,
-        config=config,
-        ctx=ctx,
-        groups=groups,
-        group_timeouts=group_timeouts,
-        default_timeout=default_timeout,
-        serial_groups=serial_groups,
-        max_parallel=max_parallel,
-        capture_output=capture_output,
-    )
+    finally:
+        if shared_payload is not None:
+            shared_payload.unlink(missing_ok=True)
 
     if not tripped:
         # Run normal tests in-process, after the pool has fully drained.
@@ -480,13 +446,11 @@ def pytest_runtestloop(session: pytest.Session) -> int | None:
             item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
 
     # Drain the Parent fixture stack on every path that reaches loop end,
-    # including maxfail/exitfirst: unlaunched Groups and in-process Items
-    # stay silent (xdist shutdown semantics), but Parent finalizers must
-    # still land before pytest_sessionfinish hooks (unlike the setup-error
-    # abort above, which defers teardown to pytest's own session-end drain
-    # per https://github.com/dyollb/pytest-isolated/issues/77).
-    if parent_fixtures_ok:
-        _teardown_parent_session_fixtures(session, isolated_items)
+    # including maxfail/exitfirst (unlaunched Groups and in-process Items
+    # stay silent, xdist shutdown semantics), so Shared Fixture teardown
+    # lands before pytest_sessionfinish hooks as in stock pytest.
+    if shared_payload is not None:
+        teardown_shared_fixtures(session, isolated_items[-1])
 
     return 1 if tripped or session.testsfailed else 0
 
@@ -609,12 +573,14 @@ def _run_group_pool(
     serial_groups: frozenset[str],
     max_parallel: int,
     capture_output: bool = True,
+    shared_payload: Path | None = None,
 ) -> bool:
     """Run every Group through the Child Pool; True if maxfail tripped.
 
     One loop serves both modes: ``max_parallel == 1`` degenerates to the
-    historical serial order (one Child alive at a time). Explicit basetemps
-    get per-Group directories even in serial runs to protect Parent resources.
+    historical serial order (one Child alive at a time). With Shared Fixtures
+    and an explicit basetemp, serial Children also get per-Group directories,
+    so a Child's basetemp cleanup cannot delete live Parent resources.
     Ctrl-C kills all live Children, reports their Groups as
     Interrupted, and re-raises for pytest's normal interrupted-exit path.
     """
@@ -646,7 +612,9 @@ def _run_group_pool(
         if _maxfail_tripped(session):
             tripped = True
 
-    if max_parallel > 1 or config.getoption("basetemp", None) is not None:
+    if max_parallel > 1 or (
+        shared_payload is not None and config.getoption("basetemp", None) is not None
+    ):
         temp_root = open_group_temp_root(config)
     try:
         while pending or running or finalizing:
@@ -674,10 +642,11 @@ def _run_group_pool(
                             slot=slot,
                             isolate_cache=max_parallel > 1,
                         ),
+                        shared_payload=shared_payload,
                     )
                     slot += 1
                 else:
-                    spec = plan_launch(config, nodeids)
+                    spec = plan_launch(config, nodeids, shared_payload=shared_payload)
                 running[name] = launch_child(
                     name, spec, timeout=group_timeout, capture=capture_output
                 )

@@ -92,7 +92,6 @@ PARENT_HANDLED_OPTIONS: Final[frozenset[str]] = frozenset(
         "--isolated",
         "--isolated-timeout",
         "--isolated-numprocesses",
-        "--isolated-strict",
         "--no-isolation",
     }
 )

@@ -1,45 +1,32 @@
 # Changelog
 
-## 0.6.1
+## 0.7.0
 
-- Set up Parent session-scoped autouse fixtures and their dependencies before
-  the first Child, including in all-Isolated suites. Finalize them at loop end,
-  before `pytest_sessionfinish` hooks, on every path that reaches loop end --
-  including runs stopped early by `--maxfail`/`--exitfirst`, where unlaunched
-  Groups report nothing (xdist shutdown semantics).
-  See <https://github.com/dyollb/pytest-isolated/issues/75>.
-- Honor Item-local direct-parametrization overrides during Parent setup and
-  per-Child fixture checks.
-- Resolve the autouse stack through each Item's own fixture closure, so a
-  subdirectory override of a session fixture (including same-name wrappers
-  such as `def resource(resource)`) is set up for exactly the Items that see
-  it.
-- Honor `parametrize(..., scope=...)` scope changes per Item: fixtures
-  narrowed below session are left to the Children's per-Item setup; fixtures
-  widened to session are set up in the Parent and checked as session fixtures.
-- Exclude Items that never reach fixture setup (`skip`/`skipif` marks and
-  `xfail(run=False)`) from Parent setup and per-Child fixture checks.
-- Report Parent fixture failures, skips, xfails, and finalizer errors without
-  losing outcome classification. A Parent setup error prevents Child launches
-  and normal test execution.
-- Warn about requested session fixtures that run only in Children. The warning
-  goes through pytest's config-time warning handling, so `filterwarnings` can
-  suppress it, and a `filterwarnings = error` escalation surfaces as a usage
-  error. The new `--isolated-strict` flag or `isolated_strict` ini setting
-  promotes these warnings to errors.
-- Keep pytest 7 supported with a warning and the previous Parent-fixture
-  behavior. Parent fixture setup and per-Child fixture checks require pytest 8
-  or later.
-- The Parent fixture mechanism now lives in one module that guards every use
-  of pytest fixture internals and degrades to the previous behavior with a
-  warning if a symbol moves in a future pytest.
-- Protect Parent resources under an explicit `--basetemp` by giving serial
-  Children separate temporary directories. Serial cache and last-failed behavior
-  stay unchanged.
+- New: **Shared Fixtures**
+  ([issue #75](https://github.com/dyollb/pytest-isolated/issues/75)). A
+  session fixture marked with `@pytest_isolated.shared`, or named in the new
+  `isolated_shared_fixtures` ini, runs once in the Parent before the first
+  Child launches. Children receive its JSON value and never run the body or
+  the dependencies reachable only through it. Teardown runs once in the Parent,
+  before `pytest_sessionfinish` hooks, including runs stopped early by
+  `--maxfail`/`--exitfirst`.
+- A shared fixture that fails, skips, or xfails in the Parent produces that
+  outcome only for the tests using it, as in plain pytest. A Parent teardown
+  error is reported once. Invalid shared fixtures (not session-scoped,
+  parametrized, or a non-JSON value) raise a usage error before any Child
+  launches.
+- With Shared Fixtures and an explicit `--basetemp`, serial Children get
+  separate per-Group temporary directories, so a Child cannot delete live
+  Parent resources.
+- Unchanged: without Shared Fixtures, session fixtures keep running once per
+  Child (like pytest-xdist workers), the Parent runs no fixtures for Isolated
+  tests, and Child commands are unchanged.
+- Shared Fixtures require pytest 8 or later. On pytest 7 they run once per
+  Child, with a warning.
+- Fix: a reasonless `xfail` relayed from a Child stays classified as xfailed.
 
 ### Upgrade note
 
-On pytest 8 or later, if you copied Parent lifecycle logic into
-`pytest_sessionstart`/`pytest_sessionfinish` while retaining the original session
-autouse fixture, both copies now run. Remove one copy to avoid duplicate setup
-and teardown. Users who moved the logic out of the fixture are unaffected.
+If you worked around issue #75 with `pytest_sessionstart`/`pytest_sessionfinish`
+hooks guarded on `PYTEST_RUNNING_IN_SUBPROCESS`, those hooks keep working. You
+can replace them with a `@pytest_isolated.shared` fixture.
