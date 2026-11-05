@@ -186,6 +186,7 @@ pytest --no-isolation --pdb
 [pytest]
 isolated_timeout = 300
 isolated_numprocesses = auto
+isolated_shared_fixtures = db_url
 ```
 
 Or in `pyproject.toml`:
@@ -194,6 +195,7 @@ Or in `pyproject.toml`:
 [tool.pytest.ini_options]
 isolated_timeout = "300"
 isolated_numprocesses = "auto"
+isolated_shared_fixtures = ["db_url"]
 ```
 
 ### Parallel Execution
@@ -222,6 +224,11 @@ pytest --isolated --isolated-numprocesses=auto
   root and its own fresh pytest cache directory (both under the run's
   `--basetemp`, when given), so concurrent Children never race on shared state —
   while `--lf`/`--ff` inherited via `PYTEST_ADDOPTS`/`addopts` keep working.
+- When [Shared Fixtures](#sharing-an-expensive-resource-across-children) are in
+  use with an explicit `--basetemp`, serial Children also get separate per-Group
+  temporary directories under the Parent's base, so a Child's temporary
+  directory cleanup cannot delete live Parent resources. Serial Children keep
+  their shared pytest cache and last-failed policy.
 - Caution: with `-s`/`--capture=no`, Children write straight to the Parent's
   terminal (live, like plain pytest); under parallelism those streams interleave
   and a one-time warning is issued. Test outcomes and reporters stay correct.
@@ -237,6 +244,72 @@ pytest --isolated --isolated-numprocesses=auto
 Unlike xdist, every Child is a complete fresh pytest process for one Group — no
 controller/worker protocol to break on Windows — at the cost of one pytest startup
 per Group rather than per worker.
+
+## Fixtures: Parent vs Children
+
+Each Child is a fresh pytest session and runs the fixtures its Group's tests
+need, including `scope="session"` fixtures. Those run **once per Child**, as in
+pytest-xdist workers. The Parent runs no fixtures for Isolated tests. Fixture
+*objects* cannot cross a process boundary.
+
+### Sharing an expensive resource across Children
+
+Some resources should be paid for once per run, not once per Child: a
+database or solver server, a container, a built artifact. Mark the session
+fixture as **shared**. It then runs **once in the Parent**, before the first
+Child launches. Every Child receives its value and never runs the fixture body
+or the dependencies reachable only through it. Teardown runs once, in the
+Parent, before `pytest_sessionfinish` hooks.
+
+```python
+# conftest.py
+import pytest
+import pytest_isolated
+
+
+@pytest.fixture(scope="session")
+@pytest_isolated.shared
+def db_url(tmp_path_factory):
+    server = start_database(tmp_path_factory.mktemp("db"))  # runs once
+    yield server.url  # Children receive this string
+    server.stop()  # runs once, in the Parent
+
+
+@pytest.mark.isolated(group="a")
+def test_a(db_url): ...
+
+
+@pytest.mark.isolated(group="b")
+def test_b(db_url): ...
+```
+
+Or list fixture names in the ini instead of decorating them:
+
+```ini
+[pytest]
+isolated_shared_fixtures = db_url license_server
+```
+
+Rules:
+
+- The fixture must be `scope="session"` and not parametrized.
+- The value must be JSON-serializable: share a *handle* (URL, port, path,
+  dict of settings), not a live object. Children get a JSON copy, so tuples
+  arrive as lists. Fixtures without a value (`yield` with no value) work too:
+  "start a service for the whole run".
+- Autouse shared fixtures set themselves up whenever an Isolated test runs.
+  Other shared fixtures set up only when an Isolated test requests them.
+  Tests skipped by marks don't count.
+- If the fixture fails or skips in the Parent, only the tests that use it
+  error or skip, each in its own Child, as in plain pytest. An invalid shared
+  fixture (wrong scope, parametrized, or a non-JSON value) is a usage error
+  raised before any Child launches.
+- Sharing belongs to a fixture *definition*: a same-name override in a
+  subdirectory is not shared unless it is decorated or named in the ini too.
+- In-process tests (unmarked, or `--no-isolation`) use the Parent's value
+  directly, so the fixture still runs only once.
+- Shared Fixtures require **pytest >= 8**. On pytest 7, shared fixtures run
+  once per Child, with a warning.
 
 ## Real-World Use Cases
 
@@ -341,7 +414,7 @@ pytest --junitxml=report.xml --durations=10
 
 ## Limitations
 
-**Fixtures**: Module/session fixtures run in each subprocess group. Cannot share fixture objects between parent and subprocess.
+**Fixtures**: Module/session fixtures run in each subprocess group. Cannot share fixture objects between parent and subprocess; share JSON values with [Shared Fixtures](#sharing-an-expensive-resource-across-children).
 
 **Debugging**: Use `--no-isolation` to run all tests in the main process for easier debugging with `pdb` or IDE debuggers.
 

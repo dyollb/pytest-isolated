@@ -2,15 +2,52 @@
 
 from __future__ import annotations
 
+import marshal
 import sys
+from typing import Final
 
 import pytest
+from _pytest.reports import TestReport
 from pytest import Pytester
+
+
+def _forked_can_marshal_reports() -> bool:
+    """Whether pytest-forked's wire format can carry this pytest's reports.
+
+    pytest-forked (<= 1.7.5) ships forked reports home with ``marshal``,
+    serializing ``TestReport.__dict__`` wholesale. pytest 9.2 added ``_id``,
+    a ``NodeId`` dataclass that ``marshal`` rejects, so every forked test dies
+    in the worker: ``EXITED with status 3``. Upstream pytest-forked bug; this
+    feature check keeps the tests honest on either side of a fix.
+    """
+    report = TestReport(
+        nodeid="test.py::test",
+        location=("test.py", 0, "test"),
+        keywords={},
+        outcome="passed",
+        longrepr=None,
+        when="call",
+    )
+    try:
+        marshal.dumps(dict(report.__dict__))
+    except ValueError:
+        return False
+    return True
+
+
+_FORKED_REPORTS_MARSHAL: Final = _forked_can_marshal_reports()
+
+_FORKED_SUPPORTED: Final = pytest.mark.skipif(
+    not _FORKED_REPORTS_MARSHAL,
+    reason="pytest-forked cannot marshal pytest>=9.2 TestReports "
+    "(pytest-dev/pytest-forked#113)",
+)
 
 
 @pytest.mark.skipif(
     sys.platform == "win32", reason="pytest-forked not available on Windows"
 )
+@_FORKED_SUPPORTED
 def test_forked_marker_runs_in_fork(pytester: Pytester) -> None:
     """Test that @pytest.mark.forked runs in a forked process and captures output."""
     pytest.importorskip("pytest_forked")
@@ -47,6 +84,7 @@ def test_forked_marker_runs_in_fork(pytester: Pytester) -> None:
 @pytest.mark.skipif(
     sys.platform == "win32", reason="pytest-forked not available on Windows"
 )
+@_FORKED_SUPPORTED
 def test_forked_flag_runs_unmarked_test_in_fork(pytester: Pytester) -> None:
     """Test that --forked flag runs even unmarked tests in a fork."""
     pytest.importorskip("pytest_forked")

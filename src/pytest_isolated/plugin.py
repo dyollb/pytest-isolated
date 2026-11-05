@@ -9,9 +9,11 @@ from .config import pytest_addoption, pytest_configure
 from .execution import pytest_runtestloop
 from .grouping import pytest_collection_modifyitems
 from .reporting import pytest_runtest_logreport
+from .shared_fixtures import pytest_collection_finish
 
 __all__: tuple[str, ...] = (
     "pytest_addoption",
+    "pytest_collection_finish",
     "pytest_collection_modifyitems",
     "pytest_configure",
     "pytest_runtest_logreport",

@@ -203,6 +203,34 @@ class TestParallelHardening:
         assert not any("cache_dir" in tok for tok in spec.cmd)
         assert not any("lfnf" in tok for tok in spec.cmd)
 
+    def test_serial_basetemp_override_preserves_cache_policy(
+        self, pytester: Pytester, tmp_path: Path
+    ) -> None:
+        _isolated_file(pytester)
+        config = pytester.parseconfig(
+            "--basetemp=original",
+            "-o",
+            "cache_dir=shared-cache",
+            "--lfnf=none",
+            "test_iso.py",
+        )
+
+        spec = plan_launch(
+            config,
+            ["test_iso.py::test_one"],
+            hardened=Hardened(root=tmp_path, slot=2, isolate_cache=False),
+        )
+
+        assert spec.cmd[-3:] == [
+            "--basetemp",
+            str(tmp_path / "group-2"),
+            "test_iso.py::test_one",
+        ]
+        assert "cache_dir=shared-cache" in spec.cmd
+        assert not any("cache-2" in token for token in spec.cmd)
+        assert "--lfnf=none" in spec.cmd
+        assert "--lfnf" not in spec.cmd
+
     def test_lfnf_none_policy_gets_fresh_cache_override(
         self, pytester: Pytester, tmp_path: Path
     ) -> None:
