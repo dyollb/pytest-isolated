@@ -249,8 +249,11 @@ per Group rather than per worker.
 
 Each Child is a fresh pytest session and runs the fixtures its Group's tests
 need, including `scope="session"` fixtures. Those run **once per Child**, as in
-pytest-xdist workers. The Parent runs no fixtures for Isolated tests. Fixture
-*objects* cannot cross a process boundary.
+pytest-xdist workers. By default, the Parent runs no fixtures for Isolated
+tests, including session-autouse fixtures. Parent setup requires explicit
+[Shared Fixtures](#sharing-an-expensive-resource-across-children) opt-in with
+`@pytest_isolated.shared` or `isolated_shared_fixtures`; `autouse=True` alone
+does not opt in. Fixture *objects* cannot cross a process boundary.
 
 ### Sharing an expensive resource across Children
 
@@ -319,12 +322,9 @@ them, not in the Parent for Isolated tests. Adding an in-process test can cause
 its fixtures to run in the Parent too; do not rely on suite composition to
 start a run-wide service.
 
-The Parent emits one warning naming session fixtures needed by runnable
-Isolated tests that are not shared. Fixture execution is unchanged. Dependencies
-used only through a Shared Fixture do not trigger this warning.
-
 For a service started once before any Child launches and stopped once afterward,
-opt in explicitly (pytest >= 8):
+opt in explicitly (pytest >= 8). The autouse fixture below requires no test
+argument and runs its setup and teardown only in the Parent:
 
 ```python
 import pytest
