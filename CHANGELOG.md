@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Warn once in the Parent when runnable Isolated tests need unshared session
+  fixtures, including autouse fixtures. Per-Child execution is unchanged; use
+  Shared Fixtures or Parent lifecycle hooks for run-wide setup and teardown.
+
 ## 0.7.0
 
 - New: **Shared Fixtures**

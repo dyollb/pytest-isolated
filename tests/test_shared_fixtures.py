@@ -107,9 +107,54 @@ def _output(result: pytest.RunResult) -> str:
 
 
 class TestDefaultPerProcess:
-    """Without opt-in, nothing changes: session fixtures run per process."""
+    """Without opt-in, session fixtures run per process, with a warning."""
 
-    def test_session_autouse_runs_in_each_child_only(self, pytester: Pytester) -> None:
+    @pytest.mark.parametrize("numprocesses", ["1", "2"])
+    @pytest.mark.parametrize("autouse", [True, False])
+    @pytest.mark.parametrize("mixed", [True, False])
+    def test_session_fixture_warns_and_runs_per_process(
+        self, pytester: Pytester, numprocesses: str, autouse: bool, mixed: bool
+    ) -> None:
+        pytester.makeconftest(
+            _LOG_HELPER
+            + """
+
+@pytest.fixture(scope="session", autouse=AUTOUSE)
+def per_process():
+    _log("setup")
+    yield
+    _log("teardown")
+""".replace("AUTOUSE", str(autouse))
+        )
+        tests = (
+            _TWO_PLAIN_GROUPS
+            if autouse
+            else _TWO_PLAIN_GROUPS.replace("():", "(per_process):")
+        )
+        if mixed:
+            tests += "\ndef test_plain(per_process): pass\n"
+        pytester.makepyfile(tests)
+
+        result = pytester.runpytest(f"--isolated-numprocesses={numprocesses}")
+
+        result.assert_outcomes(passed=3 if mixed else 2)
+        lines = _log_lines(pytester)
+        assert lines.count("child:setup") == 2
+        assert lines.count("child:teardown") == 2
+        assert lines.count("parent:setup") == int(mixed)
+        assert lines.count("parent:teardown") == int(mixed)
+        output = _output(result)
+        assert output.count("UserWarning: pytest-isolated: session fixtures") == 1
+        assert "::per_process" in output
+        assert "@pytest_isolated.shared" in output
+        assert "pytest_sessionstart/pytest_sessionfinish" in output
+
+    @pytest.mark.parametrize(
+        "options", [("--collect-only",), ("--no-isolation",), ("-m", "not isolated")]
+    )
+    def test_no_warning_without_isolated_execution(
+        self, pytester: Pytester, options: tuple[str, ...]
+    ) -> None:
         pytester.makeconftest(
             _LOG_HELPER
             + """
@@ -121,15 +166,38 @@ def per_process():
     _log("teardown")
 """
         )
-        pytester.makepyfile(_TWO_PLAIN_GROUPS)
+        pytester.makepyfile(_TWO_PLAIN_GROUPS + "\ndef test_plain(): pass\n")
+
+        result = pytester.runpytest(*options)
+
+        assert result.ret == 0
+        assert "UserWarning" not in _output(result)
+
+    @pytest.mark.parametrize("mark", ["skip", "xfail(run=False)"])
+    def test_no_warning_for_pre_skipped_items(
+        self, pytester: Pytester, mark: str
+    ) -> None:
+        pytester.makeconftest(
+            _LOG_HELPER
+            + """
+
+@pytest.fixture(scope="session", autouse=True)
+def per_process():
+    _log("setup")
+"""
+        )
+        pytester.makepyfile(
+            _TWO_PLAIN_GROUPS.replace(
+                "@pytest.mark.isolated",
+                f"@pytest.mark.{mark}\n@pytest.mark.isolated",
+            )
+        )
 
         result = pytester.runpytest()
 
-        result.assert_outcomes(passed=2)
-        lines = _log_lines(pytester)
-        assert lines.count("child:setup") == 2
-        assert not [line for line in lines if line.startswith("parent:setup")]
+        assert result.ret == 0
         assert "UserWarning" not in _output(result)
+        assert not [line for line in _log_lines(pytester) if line.endswith(":setup")]
 
     def test_collect_only_sets_up_nothing(self, pytester: Pytester) -> None:
         pytester.makeconftest(_SHARED_CONFTEST)
@@ -139,6 +207,48 @@ def per_process():
 
         assert result.ret == 0
         assert _log_lines(pytester) == ["parent:sessionfinish"]
+
+    def test_warns_for_session_dependency(self, pytester: Pytester) -> None:
+        pytester.makeconftest(
+            _LOG_HELPER
+            + """
+
+@pytest.fixture(scope="session")
+def per_process():
+    _log("setup")
+
+
+@pytest.fixture
+def resource(per_process):
+    pass
+"""
+        )
+        pytester.makepyfile(_TWO_PLAIN_GROUPS.replace("():", "(resource):"))
+
+        result = pytester.runpytest()
+
+        result.assert_outcomes(passed=2)
+        assert "::per_process" in _output(result)
+        assert _log_lines(pytester).count("child:setup") == 2
+
+    def test_no_warning_for_parent_only_fixture(self, pytester: Pytester) -> None:
+        pytester.makeconftest(
+            _LOG_HELPER
+            + """
+
+@pytest.fixture(scope="session")
+def parent_only():
+    _log("setup")
+"""
+        )
+        pytester.makepyfile(_TWO_PLAIN_GROUPS + "\ndef test_plain(parent_only): pass\n")
+
+        result = pytester.runpytest()
+
+        result.assert_outcomes(passed=3)
+        assert "UserWarning" not in _output(result)
+        assert _log_lines(pytester).count("parent:setup") == 1
+        assert "child:setup" not in _log_lines(pytester)
 
 
 @REQUIRES_PARENT_FIXTURES
@@ -165,6 +275,23 @@ class TestSharedFixtures:
             "child:sessionfinish",
             "child:sessionfinish",
         ]
+        assert "UserWarning" not in _output(result)
+
+    def test_warns_when_shared_dependency_is_also_requested_directly(
+        self, pytester: Pytester
+    ) -> None:
+        pytester.makeconftest(_SHARED_CONFTEST)
+        pytester.makepyfile(
+            _TWO_GROUPS.replace("test_b(server)", "test_b(server, expensive_dep)")
+        )
+
+        result = pytester.runpytest()
+
+        result.assert_outcomes(passed=2)
+        output = _output(result)
+        assert output.count("UserWarning: pytest-isolated: session fixtures") == 1
+        assert "::expensive_dep" in output
+        assert _log_lines(pytester).count("child:dep") == 1
 
     def test_autouse_shared_with_none_value(self, pytester: Pytester) -> None:
         """The issue #75 shape: start a service for the whole run."""
@@ -189,6 +316,7 @@ def service():
         assert lines.count("parent:setup") == 1
         assert "child:setup" not in lines
         assert lines.index("parent:teardown") < lines.index("parent:sessionfinish")
+        assert "UserWarning" not in _output(result)
 
     def test_decorator_order_does_not_matter(self, pytester: Pytester) -> None:
         pytester.makeconftest(

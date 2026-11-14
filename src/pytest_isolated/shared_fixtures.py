@@ -167,6 +167,40 @@ def _find_shared_uses(
     return uses
 
 
+def _warn_per_child_session_fixtures(
+    items: list[pytest.Item], names: frozenset[str]
+) -> None:
+    fixtures: set[str] = set()
+    for item in items:
+        if not _item_reaches_fixture_setup(item):
+            continue
+        fixture_info: FuncFixtureInfo | None = getattr(item, "_fixtureinfo", None)
+        pending = list(fixture_info.initialnames) if fixture_info is not None else []
+        visited: set[str] = set()
+        while pending:
+            name = pending.pop()
+            if name in visited:
+                continue
+            visited.add(name)
+            for fixture_def in _live_fixture_defs(item, name):
+                if _is_shared(fixture_def, names):
+                    break
+                if fixture_def.scope == "session":
+                    fixtures.add(_shared_key(fixture_def))
+                pending.extend(dep for dep in fixture_def.argnames if dep != name)
+    if fixtures:
+        _warn(
+            items[0].config,
+            "pytest-isolated: session fixtures used by Isolated tests "
+            "(including autouse) run once per Child, not in the Parent for "
+            f"those tests: {', '.join(sorted(fixtures))}. "
+            "For Parent-owned setup/teardown, opt in with "
+            "@pytest_isolated.shared or isolated_shared_fixtures, or use "
+            "pytest_sessionstart/pytest_sessionfinish hooks guarded by "
+            "PYTEST_RUNNING_IN_SUBPROCESS and collectonly.",
+        )
+
+
 def _validate_shared_uses(uses: list[_SharedUse]) -> None:
     """Raises pytest.UsageError for fixtures that cannot have one shared value."""
     for use in uses:
@@ -269,14 +303,16 @@ def setup_shared_fixtures(
     """Set up the shared fixtures the Isolated Items need; return the payload.
 
     Returns None when no runnable Item uses a shared fixture (nothing is
-    touched, so runs without Shared Fixtures behave exactly as before).
+    set up, so fixtures without opt-in still run per Child, with a warning).
     Raises pytest.UsageError for invalid shared fixtures and non-JSON values.
     Setup failures and skips do not abort the run: they are recorded in the
     payload and re-raised in each Child that needs the fixture, matching
     stock pytest where only the Items using a failed fixture error.
     """
     config = session.config
-    uses = _find_shared_uses(items, _shared_names(config))
+    names = _shared_names(config)
+    _warn_per_child_session_fixtures(items, names)
+    uses = _find_shared_uses(items, names)
     if not uses:
         return None
     _validate_shared_uses(uses)
