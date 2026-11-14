@@ -206,7 +206,9 @@ class TestEndOfOptionsMarker:
         """Seam A: 'pytest -- test_iso.py' still isolates and runs the child."""
         _isolated_file(pytester)
 
-        result = pytester.runpytest("--", "test_iso.py")
+        result = pytester.runpytest(
+            f"--basetemp={pytester.path / 'basetemp'}", "--", "test_iso.py"
+        )
 
         result.assert_outcomes(passed=1)
 

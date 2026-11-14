@@ -500,6 +500,9 @@ def test_import_mode_forwarded_to_isolated_subprocess(pytester: Pytester):
     )
 
     result = pytester.runpytest(
-        "-v", "--import-mode=importlib", "pkg/test_import_mode.py"
+        "-v",
+        "--import-mode=importlib",
+        "pkg/test_import_mode.py",
+        syspathinsert=True,
     )
     result.assert_outcomes(passed=1)
