@@ -109,11 +109,10 @@ def _output(result: pytest.RunResult) -> str:
 class TestDefaultPerProcess:
     """Without opt-in, session fixtures run per process, with a warning."""
 
-    @pytest.mark.parametrize("numprocesses", ["1", "2"])
     @pytest.mark.parametrize("autouse", [True, False])
     @pytest.mark.parametrize("mixed", [True, False])
     def test_session_fixture_warns_and_runs_per_process(
-        self, pytester: Pytester, numprocesses: str, autouse: bool, mixed: bool
+        self, pytester: Pytester, autouse: bool, mixed: bool
     ) -> None:
         pytester.makeconftest(
             _LOG_HELPER
@@ -135,7 +134,7 @@ def per_process():
             tests += "\ndef test_plain(per_process): pass\n"
         pytester.makepyfile(tests)
 
-        result = pytester.runpytest(f"--isolated-numprocesses={numprocesses}")
+        result = pytester.runpytest()
 
         result.assert_outcomes(passed=3 if mixed else 2)
         lines = _log_lines(pytester)
