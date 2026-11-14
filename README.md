@@ -249,8 +249,11 @@ per Group rather than per worker.
 
 Each Child is a fresh pytest session and runs the fixtures its Group's tests
 need, including `scope="session"` fixtures. Those run **once per Child**, as in
-pytest-xdist workers. The Parent runs no fixtures for Isolated tests. Fixture
-*objects* cannot cross a process boundary.
+pytest-xdist workers. By default, the Parent runs no fixtures for Isolated
+tests, including session-autouse fixtures. Parent setup requires explicit
+[Shared Fixtures](#sharing-an-expensive-resource-across-children) opt-in with
+`@pytest_isolated.shared` or `isolated_shared_fixtures`; `autouse=True` alone
+does not opt in. Fixture *objects* cannot cross a process boundary.
 
 ### Sharing an expensive resource across Children
 
@@ -310,6 +313,37 @@ Rules:
   directly, so the fixture still runs only once.
 - Shared Fixtures require **pytest >= 8**. On pytest 7, shared fixtures run
   once per Child, with a warning.
+
+### Parent-owned setup and teardown
+
+**An ordinary session-autouse fixture does not run in the Parent when every
+test is Isolated.** Module-scoped fixtures also run in each Child that needs
+them, not in the Parent for Isolated tests. Adding an in-process test can cause
+its fixtures to run in the Parent too; do not rely on suite composition to
+start a run-wide service.
+
+For a service started once before any Child launches and stopped once afterward,
+opt in explicitly (pytest >= 8). The autouse fixture below requires no test
+argument and runs its setup and teardown only in the Parent:
+
+```python
+import pytest
+import pytest_isolated
+
+
+@pytest.fixture(scope="session", autouse=True)
+@pytest_isolated.shared
+def global_setup():
+    start_service()
+    yield
+    stop_service()
+```
+
+Alternatively, use `pytest_sessionstart` / `pytest_sessionfinish` hooks in
+`conftest.py`, guarding both with `PYTEST_RUNNING_IN_SUBPROCESS` and
+`session.config.option.collectonly` so they run only in an executing Parent.
+These hooks also work on pytest 7. Module-scoped fixtures cannot be shared;
+move run-wide lifecycle to a shared session fixture or these hooks instead.
 
 ## Real-World Use Cases
 
